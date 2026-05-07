@@ -1,13 +1,14 @@
 (function () {
-  const DEFAULT_SIGNALING_BASE = "https://titan-camera-server.onrender.com";
+  const DEFAULT_SIGNALING_SERVER =
+    "https://titan-camera-server.onrender.com";
+  /** TitanCameraServer: app.Map("/ws", ...) — phone MUST use this path + query params. */
+  const SIGNAL_WS_PATH = "/ws";
+
   const params = new URLSearchParams(window.location.search);
   const room = params.get("room") || "";
   const token = params.get("token") || "";
-  const queryServer = params.get("server") || "";
-  const inferredServer = `${window.location.protocol}//${window.location.host}`;
-  const initialServer = queryServer || DEFAULT_SIGNALING_BASE || inferredServer;
 
-  const serverInput = document.getElementById("server");
+  const pairHint = document.getElementById("pairHint");
   const roomInput = document.getElementById("room");
   const tokenInput = document.getElementById("token");
   const status = document.getElementById("status");
@@ -18,12 +19,12 @@
   const stopCameraButton = document.getElementById("stopCamera");
   const muteMicButton = document.getElementById("muteMic");
   const preview = document.getElementById("preview");
+  const iceDiag = document.getElementById("iceDiag");
   const signalBadge = document.getElementById("signalBadge");
   const cameraBadge = document.getElementById("cameraBadge");
   const micBadge = document.getElementById("micBadge");
   const qualityBadge = document.getElementById("qualityBadge");
 
-  serverInput.value = initialServer;
   roomInput.value = room;
   tokenInput.value = token;
 
@@ -37,6 +38,49 @@
   let micEnabled = false;
   let signalState = "DISCONNECTED";
   let peer = null;
+  /** Guards stale ws.onclose after user clicks CONNECT again */
+  let connectionGeneration = 0;
+  let audioLevelTimer = null;
+  let micAudioCtx = null;
+  let micAnalyser = null;
+  let micAnalyserBuffer = null;
+  let micRafId = null;
+  let lastMicLevelForSignal = 0;
+  let micPermissionDenied = false;
+
+  /** Default ICE: STUN + public TURN (required on many mobile CGNAT paths). URL params may append extra servers. */
+  const DEFAULT_ICE_SERVERS = [
+    { urls: "stun:stun.l.google.com:19302" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turns:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+  ];
+
+  let relayFallbackTimer = null;
+  let peerStatsTimer = null;
+
+  function log(...args) {
+    console.log("[TitanWebCam]", ...args);
+  }
+
+  log("Fixed signaling server:", DEFAULT_SIGNALING_SERVER);
+  if (room && token && pairHint) {
+    pairHint.style.display = "block";
+    roomInput.readOnly = true;
+    tokenInput.readOnly = true;
+  }
 
   function setStatus(text) {
     status.textContent = text;
@@ -57,7 +101,7 @@
     startCameraButton.classList.toggle("pulse", canStart && !cameraOn);
     switchCameraButton.disabled = !cameraOn;
     stopCameraButton.disabled = !cameraOn;
-    muteMicButton.textContent = micEnabled ? "MUTE MIC: OFF" : "MUTE MIC: ON";
+    muteMicButton.textContent = micEnabled ? "MIC ON" : "MIC OFF";
 
     setBadge(signalBadge, `SIGNAL: ${signalState}`, signalState === "CONNECTED" ? "ok" : signalState === "RECONNECTING" ? "warn" : "bad");
     setBadge(cameraBadge, `CAMERA: ${cameraOn ? "ON" : "OFF"}`, cameraOn ? "ok" : "off");
@@ -94,6 +138,137 @@
     }
   }
 
+  function stopAudioLevelReporting() {
+    if (audioLevelTimer) {
+      clearInterval(audioLevelTimer);
+      audioLevelTimer = null;
+    }
+  }
+
+  function startAudioLevelReporting() {
+    stopAudioLevelReporting();
+    audioLevelTimer = setInterval(tickSendAudioLevel, 200);
+  }
+
+  function tickSendAudioLevel() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    if (micPermissionDenied && micEnabled) {
+      ws.send(JSON.stringify({ type: "audio-level", level: 0, mic: false }));
+      return;
+    }
+
+    const liveMic =
+      micEnabled &&
+      !!mediaStream &&
+      mediaStream.getAudioTracks().some(t => t.readyState === "live");
+
+    if (!liveMic) {
+      ws.send(JSON.stringify({ type: "audio-level", level: 0, mic: false }));
+      return;
+    }
+
+    const level = Math.min(100, Math.max(0, Math.round(lastMicLevelForSignal)));
+    ws.send(JSON.stringify({ type: "audio-level", level, mic: true }));
+  }
+
+  function stopMicAnalysis() {
+    if (micRafId != null) {
+      cancelAnimationFrame(micRafId);
+      micRafId = null;
+    }
+    try {
+      if (micAudioCtx && micAudioCtx.state !== "closed") {
+        micAudioCtx.close();
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    micAudioCtx = null;
+    micAnalyser = null;
+    micAnalyserBuffer = null;
+    lastMicLevelForSignal = 0;
+    updateMicMeterUi(0);
+  }
+
+  function updateMicMeterUi(level) {
+    lastMicLevelForSignal = level;
+    const fill = document.getElementById("micMeterFill");
+    const cap = document.getElementById("micMeterCaption");
+    if (fill) {
+      fill.style.width = `${Math.min(100, Math.max(0, level))}%`;
+    }
+    if (!cap) {
+      return;
+    }
+    if (micPermissionDenied && micEnabled) {
+      cap.textContent = "MIC INPUT · MIC PERMISSION DENIED";
+      if (fill) {
+        fill.style.width = "0%";
+      }
+      return;
+    }
+    if (!micEnabled) {
+      cap.textContent = "MIC INPUT · MIC OFF";
+      if (fill) {
+        fill.style.width = "0%";
+      }
+      return;
+    }
+    if (!mediaStream) {
+      cap.textContent = "MIC INPUT · MIC ON — START CAMERA";
+      if (fill) {
+        fill.style.width = "0%";
+      }
+      return;
+    }
+    cap.textContent = `MIC INPUT · ${Math.round(level)}%`;
+  }
+
+  function startMicAnalysis(stream) {
+    stopMicAnalysis();
+    if (!micEnabled || !stream) {
+      updateMicMeterUi(0);
+      return;
+    }
+    const audioTracks = stream.getAudioTracks().filter(t => t.readyState === "live");
+    if (!audioTracks.length) {
+      updateMicMeterUi(0);
+      return;
+    }
+    try {
+      micAudioCtx = new AudioContext();
+      micAnalyser = micAudioCtx.createAnalyser();
+      micAnalyser.fftSize = 512;
+      micAnalyser.smoothingTimeConstant = 0.65;
+      micAnalyserBuffer = new Uint8Array(micAnalyser.fftSize);
+      const src = micAudioCtx.createMediaStreamSource(stream);
+      src.connect(micAnalyser);
+
+      function loop() {
+        if (!micAnalyser || !micAnalyserBuffer) {
+          return;
+        }
+        micAnalyser.getByteTimeDomainData(micAnalyserBuffer);
+        let sum = 0;
+        for (let i = 0; i < micAnalyserBuffer.length; i++) {
+          const v = (micAnalyserBuffer[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / micAnalyserBuffer.length);
+        const pct = Math.min(100, Math.round(rms * 160));
+        updateMicMeterUi(pct);
+        micRafId = requestAnimationFrame(loop);
+      }
+      loop();
+    } catch (e) {
+      log("startMicAnalysis failed", e);
+      updateMicMeterUi(0);
+    }
+  }
+
   function getVideoConstraints(profile) {
     if (profile === "HD") {
       return { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, facingMode: useBackCamera ? "environment" : "user" };
@@ -119,39 +294,224 @@
     }));
   }
 
+  function iceServerKey(entry) {
+    const u = entry.urls;
+    const urls = typeof u === "string" ? u : Array.isArray(u) ? u.join(",") : "";
+    return `${urls}|${entry.username || ""}|${entry.credential || ""}`;
+  }
+
   function getIceServers() {
-    const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    const iceServers = DEFAULT_ICE_SERVERS.map(e => ({ ...e }));
+    const seen = new Set(iceServers.map(iceServerKey));
     const turn = params.get("turn");
     const turnUser = params.get("turnUser");
     const turnPass = params.get("turnPass");
-    if (turn) {
-      iceServers.push({ urls: turn, username: turnUser || "", credential: turnPass || "" });
+    const extraStun = params.get("stun");
+    if (extraStun) {
+      const e = { urls: extraStun };
+      const k = iceServerKey(e);
+      if (!seen.has(k)) {
+        seen.add(k);
+        iceServers.push(e);
+      }
     }
-
+    if (turn) {
+      const e = { urls: turn, username: turnUser || "", credential: turnPass || "" };
+      const k = iceServerKey(e);
+      if (!seen.has(k)) {
+        seen.add(k);
+        iceServers.push(e);
+      }
+    }
     return iceServers;
   }
 
-  async function startWebRtcOffer(roomCode) {
+  function clearRelayFallbackTimer() {
+    if (relayFallbackTimer) {
+      clearTimeout(relayFallbackTimer);
+      relayFallbackTimer = null;
+    }
+  }
+
+  function stopPeerStatsLoop() {
+    if (peerStatsTimer) {
+      clearInterval(peerStatsTimer);
+      peerStatsTimer = null;
+    }
+  }
+
+  function setIceDiag(text) {
+    if (iceDiag) {
+      iceDiag.textContent = text;
+    }
+  }
+
+  async function logSelectedIcePair(pc) {
+    if (!pc) {
+      return;
+    }
+    try {
+      const report = await pc.getStats();
+      let best = null;
+      for (const r of report.values()) {
+        if (r.type === "candidate-pair" && r.state === "succeeded") {
+          const prio = r.priority || 0;
+          if (!best || prio > best.prio) {
+            best = { prio, localId: r.localCandidateId, remoteId: r.remoteCandidateId, pair: r };
+          }
+        }
+      }
+      if (!best || !best.localId || !best.remoteId) {
+        log("Selected ICE pair: (none yet)");
+        return;
+      }
+      const loc = report.get(best.localId);
+      const rem = report.get(best.remoteId);
+      const lt = loc && loc.candidateType ? loc.candidateType : "?";
+      const rt = rem && rem.candidateType ? rem.candidateType : "?";
+      log("Selected ICE pair:", lt, "→", rt, best.pair);
+    } catch (e) {
+      log("getStats(selected pair):", e);
+    }
+  }
+
+  function startPeerStatsLoop(pc) {
+    stopPeerStatsLoop();
+    peerStatsTimer = setInterval(() => {
+      logSelectedIcePair(pc);
+    }, 4000);
+  }
+
+  function updatePhoneIceDiagnostics(pc, relayOnlyPolicy) {
+    if (!pc) {
+      setIceDiag("ICE: —");
+      return;
+    }
+    const ice = pc.iceConnectionState;
+    let headline = "ICE: —";
+    if (ice === "checking" || ice === "new") {
+      headline = "ICE CONNECTING";
+    } else if (ice === "connected" || ice === "completed") {
+      headline = "ICE CONNECTED";
+    } else if (ice === "failed" || ice === "disconnected" || ice === "closed") {
+      headline = `ICE: ${ice.toUpperCase()}`;
+    } else {
+      headline = `ICE: ${ice.toUpperCase()}`;
+    }
+    const policy = relayOnlyPolicy ? "TRANSPORT: RELAY ONLY (retry)" : "TRANSPORT: ALL (P2P preferred)";
+    setIceDiag(`${headline}\n${policy}`);
+    pc.getStats().then(report => {
+      let best = null;
+      for (const r of report.values()) {
+        if (r.type === "candidate-pair" && r.state === "succeeded") {
+          const prio = r.priority || 0;
+          if (!best || prio > best.prio) {
+            best = { prio, localId: r.localCandidateId, remoteId: r.remoteCandidateId };
+          }
+        }
+      }
+      if (!best || !best.localId) {
+        return;
+      }
+      const loc = report.get(best.localId);
+      const rem = report.get(best.remoteId);
+      const lt = loc && loc.candidateType ? loc.candidateType : "?";
+      const rt = rem && rem.candidateType ? rem.candidateType : "?";
+      const relayInUse = lt === "relay" || rt === "relay";
+      const pathLabel = relayInUse ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P";
+      setIceDiag(`${headline}\n${pathLabel}\nPAIR: ${lt} → ${rt}\n${policy}`);
+    }).catch(() => {});
+  }
+
+  function attachPeerIceHandlers(pc, relayOnlyPolicy) {
+    pc.oniceconnectionstatechange = () => {
+      log("iceConnectionState:", pc.iceConnectionState);
+      updatePhoneIceDiagnostics(pc, relayOnlyPolicy);
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        clearRelayFallbackTimer();
+        logSelectedIcePair(pc);
+        startPeerStatsLoop(pc);
+      }
+      if (pc.iceConnectionState === "failed") {
+        stopPeerStatsLoop();
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      log("connectionState:", pc.connectionState);
+      updatePhoneIceDiagnostics(pc, relayOnlyPolicy);
+    };
+    pc.onicegatheringstatechange = () => log("iceGatheringState:", pc.iceGatheringState);
+  }
+
+  async function startWebRtcOffer(roomCode, opts) {
+    const relayOnlyPolicy = !!(opts && opts.relayOnly);
+
     if (!ws || ws.readyState !== WebSocket.OPEN || !mediaStream) {
       return;
     }
 
+    clearRelayFallbackTimer();
+    stopPeerStatsLoop();
+
     if (peer) {
-      try { peer.close(); } catch {}
+      try {
+        peer.close();
+      } catch (_) {}
       peer = null;
     }
 
-    peer = new RTCPeerConnection({ iceServers: getIceServers() });
+    peer = new RTCPeerConnection({
+      iceServers: getIceServers(),
+      iceTransportPolicy: relayOnlyPolicy ? "relay" : "all",
+    });
     mediaStream.getVideoTracks().forEach(track => peer.addTrack(track, mediaStream));
+    if (micEnabled) {
+      mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
+    }
+
+    attachPeerIceHandlers(peer, relayOnlyPolicy);
+
     peer.onicecandidate = event => {
-      if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate }));
+      if (event.candidate) {
+        const c = event.candidate;
+        log("Local ICE candidate type:", c.type || "(unknown)", c.protocol || "", c.address || "");
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate }));
+        }
+      } else {
+        log("Local ICE gathering complete (null candidate)");
       }
     };
+
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
-    setStatus("CAMERA ON\nSENDING WEBRTC OFFER...");
+    updatePhoneIceDiagnostics(peer, relayOnlyPolicy);
+    setStatus(
+      relayOnlyPolicy
+        ? "CAMERA ON\nSENDING WEBRTC OFFER (TURN RELAY)..."
+        : "CAMERA ON\nSENDING WEBRTC OFFER..."
+    );
+
+    if (!relayOnlyPolicy) {
+      relayFallbackTimer = setTimeout(async () => {
+        relayFallbackTimer = null;
+        if (!peer || !mediaStream || !ws || ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        const s = peer.iceConnectionState;
+        if (s === "connected" || s === "completed") {
+          return;
+        }
+        log("ICE not connected after 15s — retry with relay-only ICE transport");
+        try {
+          peer.close();
+        } catch (_) {}
+        peer = null;
+        stopPeerStatsLoop();
+        await startWebRtcOffer(roomCode, { relayOnly: true });
+      }, 15000);
+    }
   }
 
   function sendCameraStopped() {
@@ -171,12 +531,18 @@
       return;
     }
 
+    stopMicAnalysis();
     mediaStream.getTracks().forEach(track => track.stop());
     mediaStream = null;
     preview.srcObject = null;
     sendCameraStopped();
+    clearRelayFallbackTimer();
+    stopPeerStatsLoop();
+    setIceDiag("ICE: —");
     if (peer) {
-      try { peer.close(); } catch {}
+      try {
+        peer.close();
+      } catch (_) {}
       peer = null;
     }
     setStatus("CAMERA OFF");
@@ -198,6 +564,7 @@
 
     try {
       if (mediaStream) {
+        stopMicAnalysis();
         mediaStream.getTracks().forEach(track => track.stop());
       }
 
@@ -209,11 +576,17 @@
       preview.srcObject = mediaStream;
       preview.muted = true;
       await preview.play();
+      micPermissionDenied = false;
+      startMicAnalysis(mediaStream);
       sendCameraReady(roomCode);
       await startWebRtcOffer(roomCode);
       setStatus(`CAMERA ON\nQUALITY: ${qualitySelect.value}\nMIC: ${micEnabled ? "ON" : "OFF"}`);
     } catch (error) {
-      setStatus(`CAMERA ERROR\n${error && error.message ? error.message : "Permission denied or unsupported."}`);
+      const msg = error && error.message ? error.message : "";
+      if (micEnabled && error && (error.name === "NotAllowedError" || /denied/i.test(msg))) {
+        micPermissionDenied = true;
+      }
+      setStatus(`CAMERA ERROR\n${msg || "Permission denied or unsupported."}`);
     }
 
     refreshOperatorUi();
@@ -223,6 +596,7 @@
     if (reconnectAttempt >= reconnectDelays.length) {
       signalState = "DISCONNECTED";
       setStatus("DISCONNECTED\nReconnect failed.");
+      log("Reconnect gave up after", reconnectDelays.length, "attempts");
       refreshOperatorUi();
       return;
     }
@@ -234,12 +608,50 @@
     reconnectTimer = setTimeout(() => connectFn(true), waitMs);
   }
 
+  /**
+   * Program.cs: WebSocket at `/ws` with query room, role, token (required before accept).
+   * Signaling HTTP base is fixed (no user override).
+   */
+  function buildPhoneWebSocketUrl(roomCode, tokenValue) {
+    const httpsBase = DEFAULT_SIGNALING_SERVER.replace(/\/+$/, "");
+    const wsOrigin = httpsBase
+      .replace(/^https:\/\//i, "wss://")
+      .replace(/^http:\/\//i, "ws://");
+    const path = `${SIGNAL_WS_PATH}?room=${encodeURIComponent(roomCode)}&role=${encodeURIComponent("phone")}&token=${encodeURIComponent(tokenValue)}`;
+    const url = `${wsOrigin}${path}`;
+    log("Phone WebSocket URL:", url);
+    return url;
+  }
+
+  function closeExistingSocket() {
+    if (!ws) {
+      return;
+    }
+    const old = ws;
+    ws = null;
+    stopHeartbeat();
+    stopAudioLevelReporting();
+    try {
+      old.onopen = null;
+      old.onmessage = null;
+      old.onerror = null;
+      old.onclose = null;
+      if (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING) {
+        old.close(1000, "replaced");
+      }
+    } catch (e) {
+      log("closeExistingSocket:", e);
+    }
+  }
+
   function connect(isRetry) {
-    const server = (serverInput.value || "").trim().replace(/\/$/, "");
     const roomCode = (roomInput.value || "").trim().toUpperCase();
     const pairingToken = (tokenInput.value || "").trim();
-    if (!server || !roomCode || !pairingToken) {
-      setStatus("Missing server / room / token");
+    if (!roomCode || !pairingToken) {
+      setStatus("Missing room / pairing token\nOpen this page from the Titan AI Live PC QR.");
+      signalState = "DISCONNECTED";
+      log("CONNECT blocked — missing room or token");
+      refreshOperatorUi();
       return;
     }
 
@@ -248,70 +660,118 @@
       reconnectTimer = null;
     }
 
-    const wsBase = resolveWsBase(server);
-    const wsUrl = `${wsBase}/ws?room=${encodeURIComponent(roomCode)}&role=phone&token=${encodeURIComponent(pairingToken)}`;
-    ws = new WebSocket(wsUrl);
-    ws.onopen = () => {
+    const gen = ++connectionGeneration;
+    closeExistingSocket();
+
+    const wsUrl = buildPhoneWebSocketUrl(roomCode, pairingToken);
+    log("Opening WebSocket (gen", gen, ")", wsUrl);
+
+    const socket = new WebSocket(wsUrl);
+    ws = socket;
+
+    socket.onopen = () => {
+      if (gen !== connectionGeneration) {
+        log("onopen ignored — stale generation", gen, connectionGeneration);
+        return;
+      }
       const wasReconnect = isRetry || reconnectAttempt > 0;
       reconnectAttempt = 0;
       signalState = "CONNECTED";
-      ws.send(JSON.stringify({ type: "hello", role: "phone", room: roomCode }));
+      log("WebSocket OPEN — sending join-room + hello");
+
+      const joinRoom = {
+        type: "join-room",
+        room: roomCode,
+        token: pairingToken,
+        role: "phone",
+      };
+      socket.send(JSON.stringify(joinRoom));
+
+      socket.send(JSON.stringify({ type: "hello", role: "phone", room: roomCode }));
+
       startHeartbeat(roomCode);
-      setStatus(wasReconnect ? "RECONNECTED\nSIGNAL ONLINE" : "CONNECTED\nSIGNAL ONLINE");
+      startAudioLevelReporting();
+      setStatus(
+        wasReconnect
+          ? "RECONNECTED\nSIGNAL CONNECTED"
+          : "CONNECTED\nSIGNAL CONNECTED"
+      );
       refreshOperatorUi();
     };
-    ws.onmessage = event => {
+
+    socket.onmessage = event => {
+      log("message:", event.data);
       try {
         const data = JSON.parse(event.data);
-        if (data.type === "heartbeat-ack") {
+        const t = data && data.type;
+
+        if (t === "heartbeat-ack") {
           signalState = "CONNECTED";
-          setStatus("HEARTBEAT OK\nSIGNAL ONLINE");
-        } else if (data.type === "signal-online") {
+          setStatus("HEARTBEAT OK\nSIGNAL CONNECTED");
+        } else if (t === "signal-online") {
           signalState = "CONNECTED";
-          setStatus("CONNECTED\nSIGNAL ONLINE");
-        } else if (data.type === "room-expired") {
+          setStatus("CONNECTED\nSIGNAL CONNECTED");
+        } else if (t === "joined" || t === "ok") {
+          signalState = "CONNECTED";
+          setStatus("CONNECTED\nSIGNAL CONNECTED");
+        } else if (t === "pong") {
+          signalState = "CONNECTED";
+          setStatus("PONG OK\nSIGNAL CONNECTED");
+        } else if (t === "room-expired") {
           signalState = "DISCONNECTED";
           setStatus("ROOM EXPIRED");
           stopHeartbeat();
+          stopAudioLevelReporting();
           stopCamera();
-        } else if (data.type === "answer" && data.sdp && peer) {
+        } else if (t === "answer" && data.sdp && peer) {
           peer.setRemoteDescription({ type: "answer", sdp: data.sdp }).catch(() => {});
-        } else if (data.type === "ice-candidate" && data.candidate && peer) {
+        } else if (t === "ice-candidate" && data.candidate && peer) {
+          const rc = data.candidate;
+          log(
+            "Remote ICE candidate:",
+            rc.type || rc.candidateType || "(unknown)",
+            rc.protocol || "",
+            (rc.address || rc.ip || "") + ""
+          );
           peer.addIceCandidate(data.candidate).catch(() => {});
         } else {
-          setStatus(`SIGNAL ONLINE\n${event.data}`);
+          setStatus(`SIGNAL CONNECTED\n${event.data}`);
         }
-      } catch {
-        setStatus(`SIGNAL ONLINE\n${event.data}`);
+      } catch (_) {
+        setStatus(`SIGNAL CONNECTED\n${event.data}`);
       }
       refreshOperatorUi();
     };
-    ws.onerror = () => {
-      setStatus("SIGNAL WEAK");
+
+    socket.onerror = err => {
+      log("WebSocket ERROR", err || "(no details — see onclose code)");
+      setStatus("SIGNAL ERROR\nSee browser console [TitanWebCam]");
+      signalState = "DISCONNECTED";
       refreshOperatorUi();
     };
-    ws.onclose = () => {
+
+    socket.onclose = evt => {
+      if (gen !== connectionGeneration) {
+        log("onclose ignored — stale generation", gen, connectionGeneration);
+        return;
+      }
+      log("WebSocket CLOSED", {
+        code: evt.code,
+        reason: evt.reason,
+        wasClean: evt.wasClean,
+      });
       stopHeartbeat();
-      signalState = "RECONNECTING";
+      stopAudioLevelReporting();
+      if (socket === ws) {
+        ws = null;
+      }
+      signalState = "DISCONNECTED";
+      setStatus(
+        `SIGNAL DISCONNECTED\nclose code ${evt.code}${evt.reason ? `: ${evt.reason}` : ""}`
+      );
       refreshOperatorUi();
       scheduleReconnect(connect);
     };
-  }
-
-  function resolveWsBase(serverValue) {
-    if (serverValue.startsWith("wss://") || serverValue.startsWith("ws://")) {
-      return serverValue.replace(/\/ws$/, "").replace(/\/$/, "");
-    }
-
-    if (serverValue.startsWith("https://")) {
-      return `wss://${serverValue.replace(/^https:\/\//, "").replace(/\/$/, "")}`;
-    }
-
-    if (serverValue.startsWith("http://")) {
-      return `ws://${serverValue.replace(/^http:\/\//, "").replace(/\/$/, "")}`;
-    }
-
-    return `wss://${serverValue.replace(/\/$/, "")}`;
   }
 
   connectButton.addEventListener("click", () => {
@@ -339,10 +799,12 @@
   });
 
   muteMicButton.addEventListener("click", async () => {
+    micPermissionDenied = false;
     micEnabled = !micEnabled;
     if (mediaStream) {
       await startCamera();
     } else {
+      updateMicMeterUi(0);
       refreshOperatorUi();
     }
   });

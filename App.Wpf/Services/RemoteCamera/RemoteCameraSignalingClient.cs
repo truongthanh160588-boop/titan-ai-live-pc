@@ -25,17 +25,6 @@ public sealed class RemoteCameraSignalingClient
             return false;
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        using var document = JsonDocument.Parse(body);
-        if (document.RootElement.TryGetProperty("joinUrl", out var joinUrl) && joinUrl.ValueKind == JsonValueKind.String)
-        {
-            var parsed = joinUrl.GetString();
-            if (!string.IsNullOrWhiteSpace(parsed))
-            {
-                session.PairingUrl = parsed;
-            }
-        }
-
         return true;
     }
 

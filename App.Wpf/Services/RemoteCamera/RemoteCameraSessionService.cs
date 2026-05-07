@@ -5,18 +5,24 @@ namespace TitanAILivePC.Services.RemoteCamera;
 
 public sealed class RemoteCameraSessionService
 {
+    private const string DefaultWebAppBaseUrl = "https://titan-web-cam.vercel.app";
+    private const string DefaultSignalingBaseUrl = "https://titan-camera-server.onrender.com";
+
     public RemoteCameraSession CreateSession(RemoteCameraSettings settings)
     {
         var roomCode = GenerateRoomCode();
         var token = Guid.NewGuid().ToString("N");
-        var webAppBaseUrl = NormalizeBaseUrl(settings.WebAppBaseUrl, "https://titan-webcam.vercel.app");
-        var signalingBaseUrl = NormalizeBaseUrl(settings.SignalingServerUrl, "https://titan-camera-server.onrender.com");
+        var signalingBaseUrl = NormalizeBaseUrl(settings.SignalingServerUrl, DefaultSignalingBaseUrl);
+        var webAppBaseUrl = ResolveWebAppBaseUrl(settings.WebAppBaseUrl, signalingBaseUrl);
+        var pairingUrl =
+            $"{webAppBaseUrl}/join?room={Uri.EscapeDataString(roomCode)}" +
+            $"&token={Uri.EscapeDataString(token)}";
         var session = new RemoteCameraSession
         {
             SessionId = Guid.NewGuid().ToString("N"),
             RoomCode = roomCode,
             PairingToken = token,
-            PairingUrl = $"{webAppBaseUrl}/join?room={roomCode}&token={token}&server={Uri.EscapeDataString(signalingBaseUrl)}",
+            PairingUrl = pairingUrl,
             State = RemoteCameraState.WaitingForPhone,
             CreatedAtUtc = DateTime.UtcNow,
             ExpiresAtUtc = DateTime.UtcNow.AddMinutes(30),
@@ -51,5 +57,40 @@ public sealed class RemoteCameraSessionService
     {
         var raw = string.IsNullOrWhiteSpace(url) ? fallback : url.Trim();
         return raw.TrimEnd('/');
+    }
+
+    private static string ResolveWebAppBaseUrl(string webAppUrl, string signalingBaseUrl)
+    {
+        var normalizedWebApp = NormalizeBaseUrl(webAppUrl, DefaultWebAppBaseUrl);
+        if (LooksLikeSignalingHost(normalizedWebApp, signalingBaseUrl))
+        {
+            return DefaultWebAppBaseUrl;
+        }
+
+        return normalizedWebApp;
+    }
+
+    private static bool LooksLikeSignalingHost(string webAppUrl, string signalingBaseUrl)
+    {
+        if (string.Equals(webAppUrl, signalingBaseUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (Uri.TryCreate(webAppUrl, UriKind.Absolute, out var webUri))
+        {
+            if (webUri.Host.Contains("titan-camera-server", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (Uri.TryCreate(signalingBaseUrl, UriKind.Absolute, out var signalUri) &&
+                string.Equals(webUri.Host, signalUri.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

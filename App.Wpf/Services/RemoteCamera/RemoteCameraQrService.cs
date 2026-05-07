@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -8,9 +9,11 @@ namespace TitanAILivePC.Services.RemoteCamera;
 
 public sealed class RemoteCameraQrService
 {
+    private const string DefaultWebAppBaseUrl = "https://titan-web-cam.vercel.app";
+
     public string BuildQrPayload(RemoteCameraSession session) =>
         string.IsNullOrWhiteSpace(session.PairingUrl)
-            ? $"TITAN-WEBCAM://join?room={session.RoomCode}"
+            ? $"{DefaultWebAppBaseUrl}/join?room={Uri.EscapeDataString(session.RoomCode)}&token={Uri.EscapeDataString(session.PairingToken)}"
             : session.PairingUrl;
 
     public ImageSource? CreateQrImageSource(string payload)

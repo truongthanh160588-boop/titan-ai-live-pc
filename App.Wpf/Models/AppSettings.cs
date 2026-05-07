@@ -16,7 +16,7 @@ public sealed class AppSettings
     public bool AutoVoiceStylePreset { get; set; } = true;
     public string OverlayBrandName { get; set; } = "TITAN AUDIO VIETNAM";
     public string OverlayBrandFontPreset { get; set; } = "Broadcast Bold";
-    public string RemoteWebAppUrl { get; set; } = "https://titan-webcam.vercel.app";
+    public string RemoteWebAppUrl { get; set; } = "https://titan-web-cam.vercel.app";
     public string RemoteSignalingServerUrl { get; set; } = "https://titan-camera-server.onrender.com";
 
     public static AppSettings Load()

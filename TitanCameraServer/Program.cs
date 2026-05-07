@@ -194,12 +194,21 @@ app.MapGet("/pc-preview", (HttpContext context) =>
     var turn = context.Request.Query["turn"].ToString();
     var turnUser = context.Request.Query["turnUser"].ToString();
     var turnPass = context.Request.Query["turnPass"].ToString();
+
+    var defaultIceServersJson = JsonSerializer.Serialize(new object[]
+    {
+        new { urls = "stun:stun.l.google.com:19302" },
+        new { urls = "turn:openrelay.metered.ca:80", username = "openrelayproject", credential = "openrelayproject" },
+        new { urls = "turn:openrelay.metered.ca:443", username = "openrelayproject", credential = "openrelayproject" },
+        new { urls = "turns:openrelay.metered.ca:443?transport=tcp", username = "openrelayproject", credential = "openrelayproject" },
+    });
+
     var html = $$"""
                  <!doctype html>
                  <html>
                  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:12px;color:#9fc2e8}video{width:100%;height:calc(100vh - 42px);background:#000;object-fit:contain}</style>
-                 </head><body><div class="box status" id="status">CONNECTING...</div><video id="remoteVideo" autoplay playsinline muted></video>
+                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:11px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.wrap{position:relative;width:100%;height:calc(100vh - 52px)}video{width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#e7edf7;font-size:17px;font-weight:700;pointer-events:none;text-align:center;padding:16px}.media-overlay.show{display:flex}</style>
+                 </head><body><div class="box status" id="status">ICE CONNECTING · STARTING...</div><div class="wrap"><video id="remoteVideo" autoplay playsinline muted></video><div id="mediaOverlay" class="media-overlay">WAITING FOR MEDIA</div></div>
                  <script>
                  const room = {{JsonSerializer.Serialize(room)}};
                  const token = {{JsonSerializer.Serialize(token)}};
@@ -207,35 +216,194 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  const turn = {{JsonSerializer.Serialize(turn)}};
                  const turnUser = {{JsonSerializer.Serialize(turnUser)}};
                  const turnPass = {{JsonSerializer.Serialize(turnPass)}};
-                 const status = document.getElementById("status");
+                 const DEFAULT_ICE = {{defaultIceServersJson}};
+                 const statusEl = document.getElementById("status");
                  const remoteVideo = document.getElementById("remoteVideo");
+                 const mediaOverlay = document.getElementById("mediaOverlay");
                  const protocol = location.protocol === "https:" ? "wss" : "ws";
-                 const wsUrl = `${protocol}://${location.host}/ws?room=${encodeURIComponent(room)}&role=pc-preview&token=${encodeURIComponent(token)}`;
-                 const iceServers = [];
-                 if(stun){ iceServers.push({ urls: stun }); }
-                 if(turn){ iceServers.push({ urls: turn, username: turnUser || "", credential: turnPass || "" }); }
-                 const pc = new RTCPeerConnection({ iceServers });
-                 const ws = new WebSocket(wsUrl);
-                 ws.onopen = () => { status.textContent = "CONNECTING..."; ws.send(JSON.stringify({ type: "hello", role: "pc-preview", room })); };
-                 ws.onmessage = async (evt) => {
-                   const msg = JSON.parse(evt.data);
-                   if(msg.type === "offer" && msg.sdp){
-                     status.textContent = "RECEIVING VIDEO...";
+                 const wsUrl = protocol + "://" + location.host + "/ws?room=" + encodeURIComponent(room) + "&role=pc-preview&token=" + encodeURIComponent(token);
+
+                 function mergeIceServers() {
+                   const out = DEFAULT_ICE.slice();
+                   const seen = new Set(out.map(e => JSON.stringify(e)));
+                   function add(entry) {
+                     const k = JSON.stringify(entry);
+                     if (!seen.has(k)) { seen.add(k); out.push(entry); }
+                   }
+                   if (stun) add({ urls: stun });
+                   if (turn) add({ urls: turn, username: turnUser || "", credential: turnPass || "" });
+                   return out;
+                 }
+
+                 let pc = null;
+                 let ws = null;
+                 let statsTimer = null;
+                 let mediaWaitTimer = null;
+
+                 function clearMediaWait() {
+                   if (mediaWaitTimer) { clearTimeout(mediaWaitTimer); mediaWaitTimer = null; }
+                 }
+
+                 function scheduleMediaWait() {
+                   clearMediaWait();
+                   mediaOverlay.classList.remove("show");
+                   mediaWaitTimer = setTimeout(function () {
+                     mediaWaitTimer = null;
+                     if (remoteVideo.videoWidth === 0 || remoteVideo.readyState < 2) {
+                       mediaOverlay.classList.add("show");
+                     }
+                   }, 5000);
+                 }
+
+                 function hideMediaWaitIfPlaying() {
+                   if (remoteVideo.videoWidth > 0 && remoteVideo.readyState >= 2) {
+                     mediaOverlay.classList.remove("show");
+                   }
+                 }
+
+                 function stopStats() {
+                   if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+                 }
+
+                 function updateDiag() {
+                   if (!pc) return;
+                   var ice = pc.iceConnectionState;
+                   var line = (ice === "checking" || ice === "new") ? "ICE CONNECTING"
+                     : ((ice === "connected" || ice === "completed") ? "ICE CONNECTED" : ("ICE: " + ice.toUpperCase()));
+                   pc.getStats().then(function (report) {
+                     var best = null;
+                     report.forEach(function (r) {
+                       if (r.type === "candidate-pair" && r.state === "succeeded") {
+                         var p = r.priority || 0;
+                         if (!best || p > best.p) best = { p: p, lid: r.localCandidateId, rid: r.remoteCandidateId };
+                       }
+                     });
+                     var extra = "";
+                     if (best && best.lid) {
+                       var loc = report.get(best.lid);
+                       var rem = report.get(best.rid);
+                       var lt = loc && loc.candidateType ? loc.candidateType : "?";
+                       var rt = rem && rem.candidateType ? rem.candidateType : "?";
+                       var relay = lt === "relay" || rt === "relay";
+                       extra = "\n" + (relay ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P") + "\nPAIR: " + lt + " → " + rt;
+                     }
+                     statusEl.textContent = line + extra;
+                     console.log("[pc-preview]", statusEl.textContent);
+                   }).catch(function () { statusEl.textContent = line; });
+                 }
+
+                 function logLocalIce(ev) {
+                   if (!ev.candidate) return;
+                   var c = ev.candidate;
+                   console.log("[pc-preview] local ICE candidate type:", c.type || "?", c.protocol || "", c.address || "");
+                 }
+
+                 function closePc() {
+                   stopStats();
+                   clearMediaWait();
+                   if (pc) {
+                     try { pc.close(); } catch (e) {}
+                     pc = null;
+                   }
+                 }
+
+                 function createPc() {
+                   closePc();
+                   var iceServers = mergeIceServers();
+                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "all" });
+                   pc.onicecandidate = function (e) {
+                     logLocalIce(e);
+                     if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                       ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
+                     }
+                   };
+                   pc.ontrack = function (e) {
+                     if (e.track.kind === "audio") {
+                       console.log("[pc-preview] AUDIO TRACK RECEIVED (muted — no PC speaker output)");
+                       try {
+                         var silent = document.createElement("audio");
+                         var ms = e.streams && e.streams[0];
+                         if (ms) silent.srcObject = ms;
+                         silent.muted = true;
+                         silent.volume = 0;
+                         silent.autoplay = true;
+                         silent.style.display = "none";
+                         document.body.appendChild(silent);
+                       } catch (err) { console.warn("[pc-preview] audio element:", err); }
+                       updateDiag();
+                       return;
+                     }
+                     if (e.track.kind === "video") {
+                       remoteVideo.srcObject = e.streams[0];
+                       remoteVideo.onloadeddata = hideMediaWaitIfPlaying;
+                       remoteVideo.onresize = hideMediaWaitIfPlaying;
+                       scheduleMediaWait();
+                       updateDiag();
+                     }
+                   };
+                   pc.oniceconnectionstatechange = function () {
+                     console.log("[pc-preview] iceConnectionState:", pc.iceConnectionState);
+                     updateDiag();
+                     if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+                       stopStats();
+                       statsTimer = setInterval(function () {
+                         pc.getStats().then(function (report) {
+                           report.forEach(function (r) {
+                             if (r.type === "candidate-pair" && r.state === "succeeded") {
+                               var loc = report.get(r.localCandidateId);
+                               var rem = report.get(r.remoteCandidateId);
+                               if (loc && rem) console.log("[pc-preview] selected pair:", loc.candidateType, "→", rem.candidateType);
+                             }
+                           });
+                         }).catch(function () {});
+                       }, 4000);
+                     }
+                     if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") stopStats();
+                   };
+                   pc.onconnectionstatechange = function () {
+                     console.log("[pc-preview] connectionState:", pc.connectionState);
+                     updateDiag();
+                   };
+                 }
+
+                 ws = new WebSocket(wsUrl);
+                 ws.onopen = function () {
+                   statusEl.textContent = "ICE CONNECTING · WS OPEN";
+                   ws.send(JSON.stringify({ type: "hello", role: "pc-preview", room }));
+                 };
+                 ws.onmessage = async function (evt) {
+                   var msg = JSON.parse(evt.data);
+                   if (msg.type === "offer" && msg.sdp) {
+                     createPc();
+                     statusEl.textContent = "ICE CONNECTING · HANDLING OFFER";
                      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
-                     const answer = await pc.createAnswer();
+                     var answer = await pc.createAnswer();
                      await pc.setLocalDescription(answer);
                      ws.send(JSON.stringify({ type: "answer", sdp: answer.sdp }));
+                     scheduleMediaWait();
+                     updateDiag();
                      return;
                    }
-                   if(msg.type === "ice-candidate" && msg.candidate){
-                     try { await pc.addIceCandidate(msg.candidate); } catch {}
+                   if (msg.type === "ice-candidate" && msg.candidate && pc) {
+                     try {
+                       await pc.addIceCandidate(msg.candidate);
+                       console.log("[pc-preview] remote ICE candidate applied");
+                     } catch (err) { console.warn("[pc-preview] addIceCandidate", err); }
                      return;
                    }
-                   if(msg.type === "camera-stopped"){ status.textContent = "SIGNAL LOST"; }
+                   if (msg.type === "camera-stopped") {
+                     statusEl.textContent = "SIGNAL LOST";
+                     closePc();
+                     remoteVideo.srcObject = null;
+                     mediaOverlay.classList.remove("show");
+                   }
                  };
-                 pc.ontrack = (e) => { remoteVideo.srcObject = e.streams[0]; status.textContent = "VIDEO ACTIVE"; };
-                 pc.onicecandidate = (e) => { if(e.candidate){ ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate })); } };
-                 ws.onclose = () => { status.textContent = "SIGNAL LOST"; };
+                 ws.onclose = function () {
+                   statusEl.textContent = "SIGNAL LOST";
+                   closePc();
+                   remoteVideo.srcObject = null;
+                   mediaOverlay.classList.remove("show");
+                 };
                  </script></body></html>
                  """;
     return Results.Content(html, "text/html");
@@ -313,6 +481,18 @@ app.Map("/ws", async context =>
             room.Touch(role);
             await SendJsonAsync(socket, new { type = "pong" }, CancellationToken.None);
             continue;
+        }
+
+        if (type.Equals("join-room", StringComparison.OrdinalIgnoreCase))
+        {
+            room.Touch(role);
+            await SendJsonAsync(socket, new { type = "joined", ok = true }, CancellationToken.None);
+            continue;
+        }
+
+        if (type.Equals("audio-level", StringComparison.OrdinalIgnoreCase))
+        {
+            room.Touch(role);
         }
 
         WebSocket? target = role switch

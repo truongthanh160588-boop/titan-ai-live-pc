@@ -23,6 +23,10 @@
     .warn { color:#f5c542; border-color:#9b7b2f; }
     .bad { color:#ff8f8f; border-color:#9b4040; }
     .off { color:#c2c9d6; border-color:#445b78; }
+    .mic-meter-wrap { margin-top:10px; }
+    .mic-meter-label { font-size:11px; color:#9fc2e8; margin-bottom:6px; font-weight:600; }
+    .mic-meter-bar { height:16px; background:#0c1118; border:1px solid #314863; border-radius:8px; overflow:hidden; }
+    .mic-meter-fill { height:100%; width:0%; background:linear-gradient(90deg,#2b7cff,#67d4ea); transition:width 0.06s linear; }
     .pulse { animation:pulseGlow 1.4s ease-in-out infinite; }
     @keyframes pulseGlow {
       0% { box-shadow:0 0 0 0 rgba(67, 170, 255, 0.55); }
@@ -34,18 +38,15 @@
 <body>
   <div class="card">
     <h1>Titan WebCam</h1>
-    <div class="muted">Remote Camera for Titan AI Live PC</div>
+    <div class="muted">Remote Camera for Titan AI Live PC · Signaling: Titan Cloud (fixed)</div>
+    <div id="pairHint" class="row muted" style="display:none">Paired from QR — tap CONNECT TO TITAN PC, then START CAMERA.</div>
     <div class="row">
-      <label>Signaling Server URL</label>
-      <input id="server" />
+      <label>Room</label>
+      <input id="room" autocomplete="off" autocapitalize="characters" />
     </div>
     <div class="row">
-      <label>Room Code</label>
-      <input id="room" />
-    </div>
-    <div class="row">
-      <label>Token</label>
-      <input id="token" />
+      <label>Pairing token</label>
+      <input id="token" autocomplete="off" />
     </div>
     <div class="row">
       <button id="connect">CONNECT TO TITAN PC</button>
@@ -68,13 +69,18 @@
       <button id="startCamera">START CAMERA</button>
       <button id="switchCamera">SWITCH CAMERA</button>
       <button id="stopCamera">STOP CAMERA</button>
-      <button id="muteMic">MUTE MIC: ON</button>
+      <button id="muteMic">MIC OFF</button>
+    </div>
+    <div class="row mic-meter-wrap">
+      <div id="micMeterCaption" class="mic-meter-label">MIC INPUT · MIC OFF</div>
+      <div class="mic-meter-bar"><div id="micMeterFill" class="mic-meter-fill"></div></div>
     </div>
     <div class="row">
       <video id="preview" class="preview" playsinline autoplay muted></video>
     </div>
+    <div id="iceDiag" class="row muted" style="font-size:12px;font-family:Consolas,Monaco,monospace;white-space:pre-wrap;min-height:2.5em;background:#0c1118;border:1px solid #314863;border-radius:8px;padding:8px;">ICE: —</div>
     <div id="status">Ready</div>
   </div>
-  <script src="./main.js"></script>
+  <script src="./main.js?v=webrtc-turn-1"></script>
 </body>
 </html>

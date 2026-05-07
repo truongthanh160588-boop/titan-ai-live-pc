@@ -38,6 +38,16 @@ public sealed class RemoteCameraViewModel : ObservableObject
     private static readonly Brush ConnectedBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#6FD6E8"));
     private static readonly Brush ExpiredBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F5A65A"));
     private static readonly Brush DefaultBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#D0D7E5"));
+    private static readonly Brush MicMeterGreenBrush = CreateMicFrozenBrush("#4BD67B");
+    private static readonly Brush MicMeterYellowBrush = CreateMicFrozenBrush("#F5C542");
+    private static readonly Brush MicMeterGrayBrush = CreateMicFrozenBrush("#8899AA");
+
+    private static SolidColorBrush CreateMicFrozenBrush(string hex)
+    {
+        var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)!);
+        b.Freeze();
+        return b;
+    }
 
     private string _statusMessage = "Remote camera offline.";
     private string _roomExpiryText = "ROOM EXPIRES IN --:--";
@@ -72,9 +82,16 @@ public sealed class RemoteCameraViewModel : ObservableObject
     private string _phoneQuality = "N/A";
     private string _videoPreviewState = "CONNECTING...";
     private string _videoPreviewStats = "Resolution: N/A | FPS: N/A";
-    private string _remoteWebAppUrl = "https://titan-webcam.vercel.app";
-    private string _remoteSignalingServerUrl = "https://camera.titanaudio.vn";
+    private string _remoteWebAppUrl = "https://titan-web-cam.vercel.app";
+    private string _remoteSignalingServerUrl = "https://titan-camera-server.onrender.com";
     private string _serverTestStatus = "SERVER UNKNOWN";
+    private double _remoteMicLevel;
+    private string _remoteMicPeakPercentText = "0%";
+    private string _remoteMicStatusText = "REMOTE MIC OFF";
+    private Brush _remoteMicStatusBrush = MicMeterGrayBrush;
+    private DateTime? _lastRemoteMicPacketUtc;
+    private bool _remotePhoneMicDeclaredOn;
+    private readonly DispatcherTimer _remoteMicStaleTimer = new();
 
     public IReadOnlyList<string> QualityProfiles { get; } = ["LOW", "HD", "SAFE 5G"];
 
@@ -149,6 +166,11 @@ public sealed class RemoteCameraViewModel : ObservableObject
     }
 
     public string ServerTestStatus { get => _serverTestStatus; private set => SetProperty(ref _serverTestStatus, value); }
+
+    public double RemoteMicLevel { get => _remoteMicLevel; private set => SetProperty(ref _remoteMicLevel, value); }
+    public string RemoteMicPeakPercentText { get => _remoteMicPeakPercentText; private set => SetProperty(ref _remoteMicPeakPercentText, value); }
+    public string RemoteMicStatusText { get => _remoteMicStatusText; private set => SetProperty(ref _remoteMicStatusText, value); }
+    public Brush RemoteMicStatusBrush { get => _remoteMicStatusBrush; private set => SetProperty(ref _remoteMicStatusBrush, value); }
     public string HttpsWarningText =>
         (RemoteWebAppUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
          RemoteSignalingServerUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
@@ -232,6 +254,11 @@ public sealed class RemoteCameraViewModel : ObservableObject
         _testTimer.Tick += (_, _) => UpdateTestDuration();
         SetSignalState(RemoteCameraSignalState.Offline, "REMOTE SIGNAL: OFFLINE");
         SyncConfigToSettings();
+
+        _remoteMicStaleTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _remoteMicStaleTimer.Tick += (_, _) => RefreshRemoteMicStaleUi();
+        _remoteMicStaleTimer.Start();
+        ResetRemoteMicMeterUi();
     }
 
     public RemoteCameraState State
@@ -318,6 +345,7 @@ public sealed class RemoteCameraViewModel : ObservableObject
         RaiseCanExecuteForCommands();
         VideoPreviewState = "CONNECTING...";
         VideoPreviewStats = "Resolution: N/A | FPS: N/A";
+        ResetRemoteMicMeterUi();
     }
 
     private void CopyLink()
@@ -371,6 +399,7 @@ public sealed class RemoteCameraViewModel : ObservableObject
         StatusMessage = "Remote camera disconnected.";
         SetSignalState(RemoteCameraSignalState.Offline, "REMOTE SIGNAL: OFFLINE");
         VideoPreviewState = "SIGNAL LOST";
+        ResetRemoteMicMeterUi();
         RaiseCanExecuteForCommands();
     }
 
@@ -609,6 +638,12 @@ public sealed class RemoteCameraViewModel : ObservableObject
                 return;
             }
 
+            if (type.Equals("audio-level", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyRemoteMicFromJson(signalMessage.RawJson);
+                return;
+            }
+
             if (type.Equals("camera-ready", StringComparison.OrdinalIgnoreCase))
             {
                 ApplyCameraReadySignal(signalMessage.RawJson);
@@ -630,6 +665,7 @@ public sealed class RemoteCameraViewModel : ObservableObject
                 StatusMessage = "Phone disconnected.";
                 SetSignalState(RemoteCameraSignalState.Waiting, "REMOTE SIGNAL: WAITING");
                 VideoPreviewState = "CONNECTING...";
+                ResetRemoteMicMeterUi();
                 Log("[REMOTE CAMERA] Phone left");
                 WriteQaLog("phone left");
                 return;
@@ -804,16 +840,94 @@ public sealed class RemoteCameraViewModel : ObservableObject
         StatusMessage = "PHONE CAMERA STOPPED";
         VideoPreviewState = "RECEIVING VIDEO...";
         VideoPreviewStats = "Resolution: N/A | FPS: N/A";
+        ResetRemoteMicMeterUi();
+    }
+
+    private void ResetRemoteMicMeterUi()
+    {
+        RemoteMicLevel = 0;
+        RemoteMicPeakPercentText = "0%";
+        RemoteMicStatusText = "REMOTE MIC OFF";
+        RemoteMicStatusBrush = MicMeterGrayBrush;
+        _lastRemoteMicPacketUtc = null;
+        _remotePhoneMicDeclaredOn = false;
+    }
+
+    private void RefreshRemoteMicStaleUi()
+    {
+        if (!_remotePhoneMicDeclaredOn || _lastRemoteMicPacketUtc is null)
+        {
+            return;
+        }
+
+        if ((DateTime.UtcNow - _lastRemoteMicPacketUtc.Value).TotalSeconds <= 2)
+        {
+            return;
+        }
+
+        RemoteMicStatusText = "REMOTE MIC NO SIGNAL";
+        RemoteMicStatusBrush = MicMeterYellowBrush;
+    }
+
+    private void ApplyRemoteMicFromJson(string rawJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            var root = doc.RootElement;
+            var micOn = root.TryGetProperty("mic", out var micProp) && micProp.ValueKind == JsonValueKind.True;
+            var level = 0;
+            if (root.TryGetProperty("level", out var levelProp) && levelProp.ValueKind == JsonValueKind.Number)
+            {
+                level = (int)Math.Clamp(levelProp.GetDouble(), 0, 100);
+            }
+
+            ApplyRemoteMicSignal(micOn, level);
+        }
+        catch
+        {
+            // Ignore malformed audio-level payloads.
+        }
+    }
+
+    private void ApplyRemoteMicSignal(bool micOn, int level)
+    {
+        _lastRemoteMicPacketUtc = DateTime.UtcNow;
+        _remotePhoneMicDeclaredOn = micOn;
+
+        if (!micOn)
+        {
+            RemoteMicLevel = 0;
+            RemoteMicPeakPercentText = "0%";
+            RemoteMicStatusText = "REMOTE MIC OFF";
+            RemoteMicStatusBrush = MicMeterGrayBrush;
+            return;
+        }
+
+        var clamped = Math.Clamp(level, 0, 100);
+        RemoteMicLevel = clamped;
+        RemoteMicPeakPercentText = $"{clamped}%";
+
+        if (clamped > 5)
+        {
+            RemoteMicStatusText = "REMOTE MIC ACTIVE";
+            RemoteMicStatusBrush = MicMeterGreenBrush;
+        }
+        else
+        {
+            RemoteMicStatusText = "REMOTE MIC NO SIGNAL";
+            RemoteMicStatusBrush = MicMeterYellowBrush;
+        }
     }
 
     public void LoadFromAppSettings(AppSettings appSettings)
     {
-        RemoteWebAppUrl = string.IsNullOrWhiteSpace(appSettings.RemoteWebAppUrl)
-            ? "https://titan-webcam.vercel.app"
-            : appSettings.RemoteWebAppUrl.Trim();
         RemoteSignalingServerUrl = string.IsNullOrWhiteSpace(appSettings.RemoteSignalingServerUrl)
-            ? "https://camera.titanaudio.vn"
+            ? "https://titan-camera-server.onrender.com"
             : appSettings.RemoteSignalingServerUrl.Trim();
+        RemoteWebAppUrl = string.IsNullOrWhiteSpace(appSettings.RemoteWebAppUrl)
+            ? "https://titan-web-cam.vercel.app"
+            : NormalizeWebAppUrl(appSettings.RemoteWebAppUrl.Trim(), RemoteSignalingServerUrl);
         SyncConfigToSettings();
     }
 
@@ -862,8 +976,26 @@ public sealed class RemoteCameraViewModel : ObservableObject
 
     private void SyncConfigToSettings()
     {
-        _settings.WebAppBaseUrl = RemoteWebAppUrl;
+        _settings.WebAppBaseUrl = NormalizeWebAppUrl(RemoteWebAppUrl, RemoteSignalingServerUrl);
         _settings.SignalingServerUrl = RemoteSignalingServerUrl;
+    }
+
+    private static string NormalizeWebAppUrl(string webAppUrl, string signalingUrl)
+    {
+        var normalizedWeb = string.IsNullOrWhiteSpace(webAppUrl)
+            ? "https://titan-web-cam.vercel.app"
+            : webAppUrl.Trim().TrimEnd('/');
+        var normalizedSignal = string.IsNullOrWhiteSpace(signalingUrl)
+            ? "https://titan-camera-server.onrender.com"
+            : signalingUrl.Trim().TrimEnd('/');
+
+        if (string.Equals(normalizedWeb, normalizedSignal, StringComparison.OrdinalIgnoreCase) ||
+            normalizedWeb.Contains("titan-camera-server", StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://titan-web-cam.vercel.app";
+        }
+
+        return normalizedWeb;
     }
 
     private void SaveConfig()
