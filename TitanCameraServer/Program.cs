@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -46,6 +47,50 @@ if (!string.IsNullOrWhiteSpace(port))
 
 app.UseCors();
 app.UseWebSockets();
+
+/// <summary>Build STUN + optional TURN from env (TURN_URLS comma-separated). No hardcoded third-party TURN.</summary>
+List<object> BuildIceServersFromEnv()
+{
+    var list = new List<object>();
+    var stunUrl = Environment.GetEnvironmentVariable("STUN_URL");
+    if (string.IsNullOrWhiteSpace(stunUrl))
+    {
+        stunUrl = "stun:stun.l.google.com:19302";
+    }
+
+    list.Add(new { urls = stunUrl });
+
+    var turnUrlsRaw = Environment.GetEnvironmentVariable("TURN_URLS") ?? "";
+    var parts = turnUrlsRaw
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => s.Trim())
+        .Where(s => s.Length > 0)
+        .ToArray();
+
+    var turnUser = Environment.GetEnvironmentVariable("TURN_USERNAME") ?? "";
+    var turnCred = Environment.GetEnvironmentVariable("TURN_CREDENTIAL") ?? "";
+
+    if (parts.Length > 0)
+    {
+        if (parts.Length == 1)
+        {
+            list.Add(new { urls = parts[0], username = turnUser, credential = turnCred });
+        }
+        else
+        {
+            list.Add(new { urls = parts, username = turnUser, credential = turnCred });
+        }
+    }
+
+    return list;
+}
+
+app.MapGet("/ice-config", () =>
+{
+    var iceServers = BuildIceServersFromEnv();
+    logger.LogInformation("GET /ice-config — {Count} RTCIceServer entries", iceServers.Count);
+    return Results.Json(new { iceServers });
+});
 
 var rooms = new ConcurrentDictionary<string, RoomState>(StringComparer.OrdinalIgnoreCase);
 
@@ -195,22 +240,6 @@ app.MapGet("/pc-preview", (HttpContext context) =>
     var turnUser = context.Request.Query["turnUser"].ToString();
     var turnPass = context.Request.Query["turnPass"].ToString();
 
-    var defaultIceServersJson = JsonSerializer.Serialize(new object[]
-    {
-        new { urls = "stun:stun.l.google.com:19302" },
-        new
-        {
-            urls = new[]
-            {
-                "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443",
-                "turns:openrelay.metered.ca:443?transport=tcp",
-            },
-            username = "openrelayproject",
-            credential = "openrelayproject",
-        },
-    });
-
     var html = $$"""
                  <!doctype html>
                  <html>
@@ -224,13 +253,15 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  const turn = {{JsonSerializer.Serialize(turn)}};
                  const turnUser = {{JsonSerializer.Serialize(turnUser)}};
                  const turnPass = {{JsonSerializer.Serialize(turnPass)}};
-                 const DEFAULT_ICE = {{defaultIceServersJson}};
+                 const iceConfigUrl = location.origin + "/ice-config";
                  const statusEl = document.getElementById("status");
                  const remoteVideo = document.getElementById("remoteVideo");
                  const mediaOverlay = document.getElementById("mediaOverlay");
                  const protocol = location.protocol === "https:" ? "wss" : "ws";
                  const wsUrl = protocol + "://" + location.host + "/ws?room=" + encodeURIComponent(room) + "&role=pc-preview&token=" + encodeURIComponent(token);
 
+                 var mergedIceServers = null;
+                 var hasTurnGlobal = false;
                  var sawRelayCandidate = false;
                  var turnProbeFailed = false;
                  var turnRelayProbeTimer = null;
@@ -251,16 +282,44 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    console.log("[pc-preview][ICE DEBUG]" + (tag ? " " + tag : ""), "iceGatheringState=", pc.iceGatheringState, "iceConnectionState=", pc.iceConnectionState, "connectionState=", pc.connectionState);
                  }
 
-                 function mergeIceServers() {
-                   const out = DEFAULT_ICE.slice();
-                   const seen = new Set(out.map(e => JSON.stringify(e)));
-                   function add(entry) {
-                     const k = JSON.stringify(entry);
-                     if (!seen.has(k)) { seen.add(k); out.push(entry); }
+                 function computeHasTurn(list) {
+                   for (var i = 0; i < list.length; i++) {
+                     var u = list[i].urls;
+                     var arr = typeof u === "string" ? [u] : Array.isArray(u) ? u : [];
+                     for (var j = 0; j < arr.length; j++) {
+                       if (/^turns?:/i.test(String(arr[j]))) return true;
+                     }
                    }
+                   return false;
+                 }
+
+                 function mergeIceServersFromApi(baseList) {
+                   var out = [];
+                   var seen = new Set();
+                   function add(entry) {
+                     var k = JSON.stringify(entry);
+                     if (!seen.has(k)) { seen.add(k); out.push(JSON.parse(JSON.stringify(entry))); }
+                   }
+                   baseList.forEach(add);
                    if (stun) add({ urls: stun });
                    if (turn) add({ urls: turn, username: turnUser || "", credential: turnPass || "" });
                    return out;
+                 }
+
+                 async function ensureIceServersForPreview() {
+                   if (mergedIceServers) return;
+                   try {
+                     var r = await fetch(iceConfigUrl, { cache: "no-store" });
+                     if (!r.ok) throw new Error("HTTP " + r.status);
+                     var j = await r.json();
+                     var base = Array.isArray(j.iceServers) ? j.iceServers : [];
+                     mergedIceServers = mergeIceServersFromApi(base);
+                   } catch (err) {
+                     console.warn("[pc-preview] /ice-config fetch failed", err);
+                     mergedIceServers = mergeIceServersFromApi([{ urls: "stun:stun.l.google.com:19302" }]);
+                   }
+                   hasTurnGlobal = computeHasTurn(mergedIceServers);
+                   console.log("[pc-preview] TURN CONFIG LOADED", hasTurnGlobal ? "TURN URIs present" : "STUN only — TURN NOT CONFIGURED");
                  }
 
                  let pc = null;
@@ -298,9 +357,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    var ice = pc.iceConnectionState;
                    var line = (ice === "checking" || ice === "new") ? "ICE CONNECTING"
                      : ((ice === "connected" || ice === "completed") ? "ICE CONNECTED" : ("ICE: " + ice.toUpperCase()));
-                   var probeExtra = (sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet")
+                   var turnWarn = (!hasTurnGlobal) ? "\nTURN NOT CONFIGURED\n5G MAY NOT WORK" : "";
+                   var probeExtra = turnWarn
+                     + (sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet")
                      + (turnProbeFailed ? "\nTURN FAILED" : "")
-                     + "\nTRANSPORT: RELAY ONLY (TURN test)";
+                     + "\nTRANSPORT: ALL";
                    var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + " connectionState=" + pc.connectionState;
                    pc.getStats().then(function (report) {
                      var best = null;
@@ -346,17 +407,19 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    sawRelayCandidate = false;
                    turnProbeFailed = false;
                    clearTurnRelayProbe();
-                   var iceServers = mergeIceServers();
-                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "relay" });
-                   turnRelayProbeTimer = setTimeout(function () {
-                     turnRelayProbeTimer = null;
-                     if (!pc) return;
-                     if (!sawRelayCandidate) {
-                       turnProbeFailed = true;
-                       console.log("[pc-preview] TURN FAILED: no typ relay in local candidates within 10s");
-                       updateDiag();
-                     }
-                   }, 10000);
+                   var iceServers = JSON.parse(JSON.stringify(mergedIceServers || [{ urls: "stun:stun.l.google.com:19302" }]));
+                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "all" });
+                   if (hasTurnGlobal) {
+                     turnRelayProbeTimer = setTimeout(function () {
+                       turnRelayProbeTimer = null;
+                       if (!pc) return;
+                       if (!sawRelayCandidate) {
+                         turnProbeFailed = true;
+                         console.log("[pc-preview] TURN FAILED");
+                         updateDiag();
+                       }
+                     }, 10000);
+                   }
                    pc.onicecandidate = function (e) {
                      if (e.candidate) {
                        logLocalIce(e);
@@ -364,6 +427,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                          sawRelayCandidate = true;
                          turnProbeFailed = false;
                          clearTurnRelayProbe();
+                         console.log("[pc-preview] TURN RELAY CANDIDATE FOUND", e.candidate.candidate);
                        }
                        if (ws && ws.readyState === WebSocket.OPEN) {
                          ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
@@ -428,13 +492,24 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  }
 
                  ws = new WebSocket(wsUrl);
-                 ws.onopen = function () {
-                   statusEl.textContent = "ICE CONNECTING · WS OPEN";
+                 ws.onopen = async function () {
+                   statusEl.textContent = "Loading ICE (/ice-config)...";
+                   try {
+                     await ensureIceServersForPreview();
+                   } catch (e) {
+                     console.warn("[pc-preview] ensureIceServersForPreview", e);
+                   }
+                   if (!hasTurnGlobal) {
+                     statusEl.textContent = "TURN NOT CONFIGURED\n5G MAY NOT WORK\n\nWS OPEN — waiting for offer…";
+                   } else {
+                     statusEl.textContent = "ICE CONNECTING · WS OPEN";
+                   }
                    ws.send(JSON.stringify({ type: "hello", role: "pc-preview", room }));
                  };
                  ws.onmessage = async function (evt) {
                    var msg = JSON.parse(evt.data);
                    if (msg.type === "offer" && msg.sdp) {
+                     await ensureIceServersForPreview();
                      createPc();
                      statusEl.textContent = "ICE CONNECTING · HANDLING OFFER";
                      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
