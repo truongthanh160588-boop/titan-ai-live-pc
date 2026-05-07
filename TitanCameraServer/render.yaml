@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: titan-camera-server
+    runtime: docker
+    rootDir: TitanCameraServer
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: CORS_ORIGINS
+        value: https://titan-web-cam.vercel.app,https://titan-webcam.vercel.app,http://localhost:5173,http://localhost:3000

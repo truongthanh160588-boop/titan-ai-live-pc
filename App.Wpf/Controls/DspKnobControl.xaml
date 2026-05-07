@@ -1,0 +1,94 @@
+<UserControl x:Class="TitanAILivePC.Controls.DspKnobControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root"
+             Width="102"
+             Height="140">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="96"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Width="96" Height="96" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <Ellipse Fill="#0D121A" Stroke="#263648" StrokeThickness="1"/>
+            <Ellipse Width="86" Height="86" Fill="#121B29" Stroke="#22344A" StrokeThickness="1"/>
+
+            <Canvas Width="96" Height="96" IsHitTestVisible="False">
+                <Path x:Name="BackgroundArc" Stroke="#1D2B3E" StrokeThickness="5.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                <Path x:Name="ActiveTailArc" Stroke="#3C7BFF" StrokeThickness="5.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.45"/>
+                <Path x:Name="ActiveMidArc" Stroke="#4EA3FF" StrokeThickness="5.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.72"/>
+                <Path x:Name="ActiveHeadArcGlow" Stroke="#4EA3FF" StrokeThickness="8.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.38">
+                    <Path.Effect>
+                        <DropShadowEffect BlurRadius="11" ShadowDepth="0" Color="#4EA3FF" Opacity="0.55"/>
+                    </Path.Effect>
+                </Path>
+                <Path x:Name="ActiveHeadArc" Stroke="#4EA3FF" StrokeThickness="5.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.95"/>
+                <Path x:Name="HotArcGlow" Stroke="#FF8A4E" StrokeThickness="8.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.28">
+                    <Path.Effect>
+                        <DropShadowEffect BlurRadius="9" ShadowDepth="0" Color="#FF8A4E" Opacity="0.52"/>
+                    </Path.Effect>
+                </Path>
+                <Path x:Name="HotArc" Stroke="#FF8A4E" StrokeThickness="5.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Opacity="0.85"/>
+            </Canvas>
+
+            <Canvas x:Name="TickCanvas" Width="96" Height="96" IsHitTestVisible="False"/>
+
+            <Ellipse Width="42" Height="42">
+                <Ellipse.Fill>
+                    <RadialGradientBrush Center="0.38,0.35" GradientOrigin="0.35,0.3" RadiusX="0.8" RadiusY="0.8">
+                        <GradientStop Color="#9AAACA" Offset="0"/>
+                        <GradientStop Color="#4F617D" Offset="0.38"/>
+                        <GradientStop Color="#1A2434" Offset="0.75"/>
+                        <GradientStop Color="#0D1118" Offset="1"/>
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+                <Ellipse.Stroke>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#B1C0DA" Offset="0"/>
+                        <GradientStop Color="#4F617D" Offset="1"/>
+                    </LinearGradientBrush>
+                </Ellipse.Stroke>
+                <Ellipse.StrokeThickness>1.1</Ellipse.StrokeThickness>
+                <Ellipse.Effect>
+                    <DropShadowEffect BlurRadius="8" ShadowDepth="0" Opacity="0.45" Color="#000000"/>
+                </Ellipse.Effect>
+            </Ellipse>
+
+            <Ellipse Width="26" Height="26" Fill="#0A0E14" Opacity="0.82" IsHitTestVisible="False"/>
+
+            <Canvas Width="96" Height="96" IsHitTestVisible="False">
+                <Line x:Name="PointerLine"
+                      X1="48"
+                      Y1="48"
+                      X2="48"
+                      Y2="28.4"
+                      Stroke="#F5F9FF"
+                      StrokeThickness="2.25"
+                      StrokeStartLineCap="Round"
+                      StrokeEndLineCap="Round">
+                    <Line.Effect>
+                        <DropShadowEffect BlurRadius="5.5" ShadowDepth="0" Color="#DCE6F8" Opacity="0.42"/>
+                    </Line.Effect>
+                </Line>
+            </Canvas>
+        </Grid>
+
+        <TextBlock Grid.Row="1"
+                   Text="{Binding PercentageText, ElementName=Root}"
+                   HorizontalAlignment="Center"
+                   Margin="0,4,0,0"
+                   FontSize="16"
+                   FontWeight="Bold"
+                   Foreground="#F2F6FF"/>
+
+        <TextBlock Grid.Row="2"
+                   Text="{Binding Label, ElementName=Root}"
+                   HorizontalAlignment="Center"
+                   Margin="0,1,0,0"
+                   FontSize="10"
+                   FontWeight="SemiBold"
+                   Foreground="{Binding AccentColor, ElementName=Root}"/>
+    </Grid>
+</UserControl>
