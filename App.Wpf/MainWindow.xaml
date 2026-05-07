@@ -1050,7 +1050,7 @@
                                 <TextBlock Text="{Binding RemoteCamera.PhoneQuality, StringFormat=Phone Quality: {0}}" Foreground="#D0D7E5" FontSize="10.5" Margin="0,2,0,0"/>
                                 <TextBlock Text="REMOTE MIC" Style="{StaticResource ModuleTitleStyle}" Margin="0,8,0,0"/>
                                 <TextBlock Text="{Binding RemoteCamera.RemoteMicStatusText}" Foreground="{Binding RemoteCamera.RemoteMicStatusBrush}" FontSize="10.5" FontWeight="SemiBold"/>
-                                <ProgressBar Value="{Binding RemoteCamera.RemoteMicLevel}" Maximum="100" Height="12" Margin="0,4,0,2"
+                                <ProgressBar Value="{Binding RemoteCamera.RemoteMicLevel, Mode=OneWay}" Maximum="100" Height="12" Margin="0,4,0,2"
                                              Foreground="{Binding RemoteCamera.RemoteMicStatusBrush}" Background="#1A2735"/>
                                 <TextBlock Text="{Binding RemoteCamera.RemoteMicPeakPercentText, StringFormat=Peak level: {0}}" Foreground="#8FB0D5" FontSize="10"/>
                                 <TextBlock Text="Camera Quality" Foreground="#8CA4C5" FontSize="10" Margin="0,4,0,2"/>
@@ -1588,7 +1588,7 @@
                                 <TextBlock Text="{Binding RemoteCamera.RoomCode, StringFormat=Room: {0}}" Foreground="#D0D7E5" FontSize="10.5" Margin="0,4,0,0"/>
                                 <TextBlock Text="REMOTE MIC" Foreground="#9FE6B1" FontSize="11" FontWeight="Bold" Margin="0,10,0,4"/>
                                 <TextBlock Text="{Binding RemoteCamera.RemoteMicStatusText}" Foreground="{Binding RemoteCamera.RemoteMicStatusBrush}" FontSize="10"/>
-                                <ProgressBar Value="{Binding RemoteCamera.RemoteMicLevel}" Maximum="100" Height="10" Margin="0,4,0,2"
+                                <ProgressBar Value="{Binding RemoteCamera.RemoteMicLevel, Mode=OneWay}" Maximum="100" Height="10" Margin="0,4,0,2"
                                              Foreground="{Binding RemoteCamera.RemoteMicStatusBrush}" Background="#1A2735"/>
                                 <TextBlock Text="{Binding RemoteCamera.RemoteMicPeakPercentText, StringFormat=Peak: {0}}" Foreground="#8FB0D5" FontSize="9.5"/>
                                 <Button Content="CREATE CAMERA ROOM" Command="{Binding RemoteCamera.CreateCameraRoomCommand}" Style="{StaticResource LiveProButtonStyle}" Margin="0,8,0,0"/>
