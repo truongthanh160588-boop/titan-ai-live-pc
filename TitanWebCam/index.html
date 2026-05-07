@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Titan WebCam</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#0e1218; color:#e7edf7; padding:20px; }
+    .card { max-width:560px; margin:0 auto; background:#131b25; border:1px solid #2e3f56; border-radius:12px; padding:16px; }
+    h1 { margin-top:0; color:#9fe6b1; font-size:26px; }
+    .row { margin:10px 0; }
+    input { width:100%; padding:10px; border-radius:8px; border:1px solid #314863; background:#0c1118; color:#e7edf7; }
+    select { width:100%; padding:10px; border-radius:8px; border:1px solid #314863; background:#0c1118; color:#e7edf7; }
+    button { padding:14px 14px; border:none; border-radius:10px; background:#2b7cff; color:white; font-weight:700; cursor:pointer; font-size:15px; }
+    button:disabled { opacity:0.55; cursor:not-allowed; }
+    .muted { color:#9fc2e8; font-size:13px; }
+    #status { white-space:pre-wrap; background:#0c1118; border:1px solid #314863; border-radius:8px; padding:10px; min-height:56px; }
+    .preview { width:100%; max-height:360px; background:#000; border:1px solid #314863; border-radius:10px; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .badge-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+    .badge { background:#0c1118; border:1px solid #314863; border-radius:10px; padding:10px; font-size:14px; font-weight:700; text-align:center; }
+    .ok { color:#9fe6b1; border-color:#3b8d5f; }
+    .warn { color:#f5c542; border-color:#9b7b2f; }
+    .bad { color:#ff8f8f; border-color:#9b4040; }
+    .off { color:#c2c9d6; border-color:#445b78; }
+    .pulse { animation:pulseGlow 1.4s ease-in-out infinite; }
+    @keyframes pulseGlow {
+      0% { box-shadow:0 0 0 0 rgba(67, 170, 255, 0.55); }
+      70% { box-shadow:0 0 0 10px rgba(67, 170, 255, 0); }
+      100% { box-shadow:0 0 0 0 rgba(67, 170, 255, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Titan WebCam</h1>
+    <div class="muted">Remote Camera for Titan AI Live PC</div>
+    <div class="row">
+      <label>Signaling Server URL</label>
+      <input id="server" />
+    </div>
+    <div class="row">
+      <label>Room Code</label>
+      <input id="room" />
+    </div>
+    <div class="row">
+      <label>Token</label>
+      <input id="token" />
+    </div>
+    <div class="row">
+      <button id="connect">CONNECT TO TITAN PC</button>
+    </div>
+    <div class="badge-grid">
+      <div id="signalBadge" class="badge off">SIGNAL: DISCONNECTED</div>
+      <div id="cameraBadge" class="badge off">CAMERA: OFF</div>
+      <div id="micBadge" class="badge warn">MIC: OFF</div>
+      <div id="qualityBadge" class="badge off">QUALITY: SAFE 5G</div>
+    </div>
+    <div class="row">
+      <label>Quality</label>
+      <select id="quality">
+        <option value="SAFE_5G">SAFE 5G (720p/24fps)</option>
+        <option value="LOW">LOW (720p/30fps)</option>
+        <option value="HD">HD (1080p/30fps)</option>
+      </select>
+    </div>
+    <div class="row grid2">
+      <button id="startCamera">START CAMERA</button>
+      <button id="switchCamera">SWITCH CAMERA</button>
+      <button id="stopCamera">STOP CAMERA</button>
+      <button id="muteMic">MUTE MIC: ON</button>
+    </div>
+    <div class="row">
+      <video id="preview" class="preview" playsinline autoplay muted></video>
+    </div>
+    <div id="status">Ready</div>
+  </div>
+  <script src="./main.js"></script>
+</body>
+</html>
