@@ -198,9 +198,17 @@ app.MapGet("/pc-preview", (HttpContext context) =>
     var defaultIceServersJson = JsonSerializer.Serialize(new object[]
     {
         new { urls = "stun:stun.l.google.com:19302" },
-        new { urls = "turn:openrelay.metered.ca:80", username = "openrelayproject", credential = "openrelayproject" },
-        new { urls = "turn:openrelay.metered.ca:443", username = "openrelayproject", credential = "openrelayproject" },
-        new { urls = "turns:openrelay.metered.ca:443?transport=tcp", username = "openrelayproject", credential = "openrelayproject" },
+        new
+        {
+            urls = new[]
+            {
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turns:openrelay.metered.ca:443?transport=tcp",
+            },
+            username = "openrelayproject",
+            credential = "openrelayproject",
+        },
     });
 
     var html = $$"""
@@ -222,6 +230,26 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  const mediaOverlay = document.getElementById("mediaOverlay");
                  const protocol = location.protocol === "https:" ? "wss" : "ws";
                  const wsUrl = protocol + "://" + location.host + "/ws?room=" + encodeURIComponent(room) + "&role=pc-preview&token=" + encodeURIComponent(token);
+
+                 var sawRelayCandidate = false;
+                 var turnProbeFailed = false;
+                 var turnRelayProbeTimer = null;
+
+                 function clearTurnRelayProbe() {
+                   if (turnRelayProbeTimer) { clearTimeout(turnRelayProbeTimer); turnRelayProbeTimer = null; }
+                 }
+
+                 function candidateLooksRelay(c) {
+                   if (!c) return false;
+                   if (c.type === "relay") return true;
+                   var sdp = typeof c.candidate === "string" ? c.candidate : "";
+                   return /\btyp\s+relay\b/i.test(sdp);
+                 }
+
+                 function logIcePcStates(pc, tag) {
+                   if (!pc) return;
+                   console.log("[pc-preview][ICE DEBUG]" + (tag ? " " + tag : ""), "iceGatheringState=", pc.iceGatheringState, "iceConnectionState=", pc.iceConnectionState, "connectionState=", pc.connectionState);
+                 }
 
                  function mergeIceServers() {
                    const out = DEFAULT_ICE.slice();
@@ -270,6 +298,10 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    var ice = pc.iceConnectionState;
                    var line = (ice === "checking" || ice === "new") ? "ICE CONNECTING"
                      : ((ice === "connected" || ice === "completed") ? "ICE CONNECTED" : ("ICE: " + ice.toUpperCase()));
+                   var probeExtra = (sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet")
+                     + (turnProbeFailed ? "\nTURN FAILED" : "")
+                     + "\nTRANSPORT: RELAY ONLY (TURN test)";
+                   var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + " connectionState=" + pc.connectionState;
                    pc.getStats().then(function (report) {
                      var best = null;
                      report.forEach(function (r) {
@@ -287,20 +319,22 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        var relay = lt === "relay" || rt === "relay";
                        extra = "\n" + (relay ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P") + "\nPAIR: " + lt + " → " + rt;
                      }
-                     statusEl.textContent = line + extra;
+                     statusEl.textContent = line + extra + probeExtra + gatherLine;
                      console.log("[pc-preview]", statusEl.textContent);
-                   }).catch(function () { statusEl.textContent = line; });
+                   }).catch(function () { statusEl.textContent = line + probeExtra + gatherLine; });
                  }
 
                  function logLocalIce(ev) {
                    if (!ev.candidate) return;
                    var c = ev.candidate;
+                   console.log("[pc-preview][ICE FULL CANDIDATE]", c.candidate);
                    console.log("[pc-preview] local ICE candidate type:", c.type || "?", c.protocol || "", c.address || "");
                  }
 
                  function closePc() {
                    stopStats();
                    clearMediaWait();
+                   clearTurnRelayProbe();
                    if (pc) {
                      try { pc.close(); } catch (e) {}
                      pc = null;
@@ -309,13 +343,36 @@ app.MapGet("/pc-preview", (HttpContext context) =>
 
                  function createPc() {
                    closePc();
+                   sawRelayCandidate = false;
+                   turnProbeFailed = false;
+                   clearTurnRelayProbe();
                    var iceServers = mergeIceServers();
-                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "all" });
-                   pc.onicecandidate = function (e) {
-                     logLocalIce(e);
-                     if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-                       ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
+                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "relay" });
+                   turnRelayProbeTimer = setTimeout(function () {
+                     turnRelayProbeTimer = null;
+                     if (!pc) return;
+                     if (!sawRelayCandidate) {
+                       turnProbeFailed = true;
+                       console.log("[pc-preview] TURN FAILED: no typ relay in local candidates within 10s");
+                       updateDiag();
                      }
+                   }, 10000);
+                   pc.onicecandidate = function (e) {
+                     if (e.candidate) {
+                       logLocalIce(e);
+                       if (candidateLooksRelay(e.candidate)) {
+                         sawRelayCandidate = true;
+                         turnProbeFailed = false;
+                         clearTurnRelayProbe();
+                       }
+                       if (ws && ws.readyState === WebSocket.OPEN) {
+                         ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
+                       }
+                     } else {
+                       console.log("[pc-preview][ICE FULL CANDIDATE] (end-of-candidates)");
+                       logIcePcStates(pc, "after end-of-candidates");
+                     }
+                     updateDiag();
                    };
                    pc.ontrack = function (e) {
                      if (e.track.kind === "audio") {
@@ -341,8 +398,12 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        updateDiag();
                      }
                    };
+                   pc.onicegatheringstatechange = function () {
+                     logIcePcStates(pc, "icegatheringstatechange");
+                     updateDiag();
+                   };
                    pc.oniceconnectionstatechange = function () {
-                     console.log("[pc-preview] iceConnectionState:", pc.iceConnectionState);
+                     logIcePcStates(pc, "iceconnectionstatechange");
                      updateDiag();
                      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
                        stopStats();
@@ -361,7 +422,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") stopStats();
                    };
                    pc.onconnectionstatechange = function () {
-                     console.log("[pc-preview] connectionState:", pc.connectionState);
+                     logIcePcStates(pc, "connectionstatechange");
                      updateDiag();
                    };
                  }
@@ -382,10 +443,13 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      ws.send(JSON.stringify({ type: "answer", sdp: answer.sdp }));
                      scheduleMediaWait();
                      updateDiag();
+                     logIcePcStates(pc, "after setLocalDescription answer");
                      return;
                    }
                    if (msg.type === "ice-candidate" && msg.candidate && pc) {
                      try {
+                       var rc = msg.candidate;
+                       console.log("[pc-preview][ICE FULL REMOTE]", rc && rc.candidate != null ? rc.candidate : JSON.stringify(rc));
                        await pc.addIceCandidate(msg.candidate);
                        console.log("[pc-preview] remote ICE candidate applied");
                      } catch (err) { console.warn("[pc-preview] addIceCandidate", err); }

@@ -48,28 +48,50 @@
   let lastMicLevelForSignal = 0;
   let micPermissionDenied = false;
 
-  /** Default ICE: STUN + public TURN (required on many mobile CGNAT paths). URL params may append extra servers. */
-  const DEFAULT_ICE_SERVERS = [
-    { urls: "stun:stun.l.google.com:19302" },
-    {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-    {
-      urls: "turns:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject",
-    },
-  ];
+  /**
+   * OpenRelay Metered — single RTCIceServer with urls[] (spec-friendly).
+   * STUN kept for compatibility; with iceTransportPolicy "relay" browsers still need TURN URIs here.
+   */
+  const OPENRELAY_TURN = {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turns:openrelay.metered.ca:443?transport=tcp",
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  };
 
-  let relayFallbackTimer = null;
   let peerStatsTimer = null;
+  let turnRelayProbeTimer = null;
+  /** True after local ICE candidate string contained typ relay (or RTCIceCandidate.type relay). */
+  let sawRelayCandidate = false;
+  let turnProbeFailed = false;
+
+  function clearTurnRelayProbe() {
+    if (turnRelayProbeTimer) {
+      clearTimeout(turnRelayProbeTimer);
+      turnRelayProbeTimer = null;
+    }
+  }
+
+  function candidateLooksRelay(c) {
+    if (!c) {
+      return false;
+    }
+    if (c.type === "relay") {
+      return true;
+    }
+    const sdp = typeof c.candidate === "string" ? c.candidate : "";
+    return /\btyp\s+relay\b/i.test(sdp);
+  }
+
+  function logIcePcStates(pc, label) {
+    if (!pc) {
+      return;
+    }
+    log(`[ICE DEBUG]${label ? " " + label : ""}`, "iceGatheringState=", pc.iceGatheringState, "| iceConnectionState=", pc.iceConnectionState, "| connectionState=", pc.connectionState);
+  }
 
   function log(...args) {
     console.log("[TitanWebCam]", ...args);
@@ -301,7 +323,14 @@
   }
 
   function getIceServers() {
-    const iceServers = DEFAULT_ICE_SERVERS.map(e => ({ ...e }));
+    const iceServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      {
+        urls: OPENRELAY_TURN.urls.slice(),
+        username: OPENRELAY_TURN.username,
+        credential: OPENRELAY_TURN.credential,
+      },
+    ];
     const seen = new Set(iceServers.map(iceServerKey));
     const turn = params.get("turn");
     const turnUser = params.get("turnUser");
@@ -324,13 +353,6 @@
       }
     }
     return iceServers;
-  }
-
-  function clearRelayFallbackTimer() {
-    if (relayFallbackTimer) {
-      clearTimeout(relayFallbackTimer);
-      relayFallbackTimer = null;
-    }
   }
 
   function stopPeerStatsLoop() {
@@ -382,7 +404,7 @@
     }, 4000);
   }
 
-  function updatePhoneIceDiagnostics(pc, relayOnlyPolicy) {
+  function updatePhoneIceDiagnostics(pc) {
     if (!pc) {
       setIceDiag("ICE: —");
       return;
@@ -398,8 +420,16 @@
     } else {
       headline = `ICE: ${ice.toUpperCase()}`;
     }
-    const policy = relayOnlyPolicy ? "TRANSPORT: RELAY ONLY (retry)" : "TRANSPORT: ALL (P2P preferred)";
-    setIceDiag(`${headline}\n${policy}`);
+    const policy = "TRANSPORT: RELAY ONLY (TURN test)";
+    const relayHint = sawRelayCandidate ? "LOCAL CAND: saw typ relay" : "LOCAL CAND: no relay yet";
+    const failLine = turnProbeFailed ? "TURN FAILED" : "";
+    const gather = pc.iceGatheringState || "";
+    const conn = pc.connectionState || "";
+    setIceDiag(
+      `${headline}\n${policy}\n${relayHint}` +
+        (failLine ? `\n${failLine}` : "") +
+        `\ngather=${gather} conn=${conn}`
+    );
     pc.getStats().then(report => {
       let best = null;
       for (const r of report.values()) {
@@ -419,16 +449,22 @@
       const rt = rem && rem.candidateType ? rem.candidateType : "?";
       const relayInUse = lt === "relay" || rt === "relay";
       const pathLabel = relayInUse ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P";
-      setIceDiag(`${headline}\n${pathLabel}\nPAIR: ${lt} → ${rt}\n${policy}`);
+      const failLine = turnProbeFailed ? "\nTURN FAILED" : "";
+      const relayHint = sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet";
+      const gather = pc.iceGatheringState || "";
+      const conn = pc.connectionState || "";
+      setIceDiag(
+        `${headline}\n${pathLabel}\nPAIR: ${lt} → ${rt}\nTRANSPORT: RELAY ONLY (TURN test)${relayHint}${failLine}\ngather=${gather} conn=${conn}`
+      );
     }).catch(() => {});
   }
 
-  function attachPeerIceHandlers(pc, relayOnlyPolicy) {
+  function attachPeerIceHandlers(pc) {
     pc.oniceconnectionstatechange = () => {
-      log("iceConnectionState:", pc.iceConnectionState);
-      updatePhoneIceDiagnostics(pc, relayOnlyPolicy);
+      logIcePcStates(pc, "iceconnectionstatechange");
+      updatePhoneIceDiagnostics(pc);
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-        clearRelayFallbackTimer();
+        clearTurnRelayProbe();
         logSelectedIcePair(pc);
         startPeerStatsLoop(pc);
       }
@@ -437,21 +473,24 @@
       }
     };
     pc.onconnectionstatechange = () => {
-      log("connectionState:", pc.connectionState);
-      updatePhoneIceDiagnostics(pc, relayOnlyPolicy);
+      logIcePcStates(pc, "connectionstatechange");
+      updatePhoneIceDiagnostics(pc);
     };
-    pc.onicegatheringstatechange = () => log("iceGatheringState:", pc.iceGatheringState);
+    pc.onicegatheringstatechange = () => {
+      logIcePcStates(pc, "icegatheringstatechange");
+      updatePhoneIceDiagnostics(pc);
+    };
   }
 
-  async function startWebRtcOffer(roomCode, opts) {
-    const relayOnlyPolicy = !!(opts && opts.relayOnly);
-
+  async function startWebRtcOffer(roomCode) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !mediaStream) {
       return;
     }
 
-    clearRelayFallbackTimer();
+    clearTurnRelayProbe();
     stopPeerStatsLoop();
+    sawRelayCandidate = false;
+    turnProbeFailed = false;
 
     if (peer) {
       try {
@@ -462,56 +501,53 @@
 
     peer = new RTCPeerConnection({
       iceServers: getIceServers(),
-      iceTransportPolicy: relayOnlyPolicy ? "relay" : "all",
+      iceTransportPolicy: "relay",
     });
     mediaStream.getVideoTracks().forEach(track => peer.addTrack(track, mediaStream));
     if (micEnabled) {
       mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
     }
 
-    attachPeerIceHandlers(peer, relayOnlyPolicy);
+    attachPeerIceHandlers(peer);
 
     peer.onicecandidate = event => {
       if (event.candidate) {
         const c = event.candidate;
+        log("[ICE FULL CANDIDATE]", c.candidate);
+        if (candidateLooksRelay(c)) {
+          sawRelayCandidate = true;
+          turnProbeFailed = false;
+          clearTurnRelayProbe();
+        }
         log("Local ICE candidate type:", c.type || "(unknown)", c.protocol || "", c.address || "");
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate }));
         }
       } else {
-        log("Local ICE gathering complete (null candidate)");
+        log("[ICE FULL CANDIDATE] (end-of-candidates)");
+        logIcePcStates(peer, "after end-of-candidates");
       }
+      updatePhoneIceDiagnostics(peer);
     };
+
+    turnRelayProbeTimer = setTimeout(() => {
+      turnRelayProbeTimer = null;
+      if (!peer) {
+        return;
+      }
+      if (!sawRelayCandidate) {
+        turnProbeFailed = true;
+        log("TURN FAILED: no typ relay in local candidates within 10s");
+        updatePhoneIceDiagnostics(peer);
+      }
+    }, 10000);
 
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
-    updatePhoneIceDiagnostics(peer, relayOnlyPolicy);
-    setStatus(
-      relayOnlyPolicy
-        ? "CAMERA ON\nSENDING WEBRTC OFFER (TURN RELAY)..."
-        : "CAMERA ON\nSENDING WEBRTC OFFER..."
-    );
-
-    if (!relayOnlyPolicy) {
-      relayFallbackTimer = setTimeout(async () => {
-        relayFallbackTimer = null;
-        if (!peer || !mediaStream || !ws || ws.readyState !== WebSocket.OPEN) {
-          return;
-        }
-        const s = peer.iceConnectionState;
-        if (s === "connected" || s === "completed") {
-          return;
-        }
-        log("ICE not connected after 15s — retry with relay-only ICE transport");
-        try {
-          peer.close();
-        } catch (_) {}
-        peer = null;
-        stopPeerStatsLoop();
-        await startWebRtcOffer(roomCode, { relayOnly: true });
-      }, 15000);
-    }
+    updatePhoneIceDiagnostics(peer);
+    logIcePcStates(peer, "after setLocalDescription offer");
+    setStatus("CAMERA ON\nSENDING WEBRTC OFFER (relay-only / TURN test)...");
   }
 
   function sendCameraStopped() {
@@ -536,7 +572,7 @@
     mediaStream = null;
     preview.srcObject = null;
     sendCameraStopped();
-    clearRelayFallbackTimer();
+    clearTurnRelayProbe();
     stopPeerStatsLoop();
     setIceDiag("ICE: —");
     if (peer) {
@@ -727,6 +763,7 @@
           peer.setRemoteDescription({ type: "answer", sdp: data.sdp }).catch(() => {});
         } else if (t === "ice-candidate" && data.candidate && peer) {
           const rc = data.candidate;
+          log("[ICE FULL REMOTE]", rc.candidate != null ? rc.candidate : JSON.stringify(rc));
           log(
             "Remote ICE candidate:",
             rc.type || rc.candidateType || "(unknown)",
