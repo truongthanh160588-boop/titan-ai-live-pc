@@ -251,6 +251,16 @@
     cap.textContent = `MIC INPUT · ${Math.round(level)}%`;
   }
 
+  function applyLocalMicTrackState() {
+    if (!mediaStream) {
+      return;
+    }
+    const tracks = mediaStream.getAudioTracks();
+    for (const track of tracks) {
+      track.enabled = !!micEnabled;
+    }
+  }
+
   function startMicAnalysis(stream) {
     stopMicAnalysis();
     if (!micEnabled || !stream) {
@@ -607,9 +617,7 @@
       iceTransportPolicy: "relay",
     });
     mediaStream.getVideoTracks().forEach(track => peer.addTrack(track, mediaStream));
-    if (micEnabled) {
-      mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
-    }
+    mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
     await tuneVideoSenderForProfile(peer, qualitySelect.value);
 
     attachPeerIceHandlers(peer);
@@ -709,15 +717,14 @@
 
       const constraints = {
         video: getVideoConstraints(qualitySelect.value),
-        audio: micEnabled
-          ? {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
-          : false
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       };
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      applyLocalMicTrackState();
       preview.srcObject = mediaStream;
       preview.muted = true;
       await preview.play();
@@ -970,7 +977,12 @@
     micPermissionDenied = false;
     micEnabled = !micEnabled;
     if (mediaStream) {
-      await startCamera();
+      applyLocalMicTrackState();
+      const roomCode = (roomInput.value || "").trim().toUpperCase();
+      sendCameraReady(roomCode);
+      setStatus(`MIC ${micEnabled ? "ON" : "OFF"}\nVIDEO STABLE MODE`);
+      tickSendAudioLevel();
+      refreshOperatorUi();
     } else {
       updateMicMeterUi(0);
       refreshOperatorUi();
