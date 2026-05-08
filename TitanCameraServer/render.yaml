@@ -16,3 +16,5 @@ services:
       # TURN_URLS=stun:stun.relay.metered.ca:80,turn:global.relay.metered.ca:80,turn:global.relay.metered.ca:80?transport=tcp,turn:global.relay.metered.ca:443,turns:global.relay.metered.ca:443?transport=tcp
       # TURN_USERNAME=<Metered dashboard>
       # TURN_CREDENTIAL=<Metered dashboard>
+      # STUN-only ICE test (GET /ice-config returns only stun:stun.l.google.com:19302 — unset when done):
+      # WEBRTC_STUN_ONLY_TEST=true

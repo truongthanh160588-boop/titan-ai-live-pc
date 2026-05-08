@@ -1,0 +1,387 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "App.Wpf/1.0.0": {
+        "dependencies": {
+          "EdgeTTS": "1.0.3",
+          "Microsoft.Web.WebView2": "1.0.2792.45",
+          "Newtonsoft.Json": "13.0.3",
+          "QRCoder": "1.8.0",
+          "System.Drawing.Common": "10.0.0",
+          "System.Speech": "8.0.0",
+          "Tesseract": "5.2.0",
+          "obs-websocket-dotnet": "5.0.1",
+          "Microsoft.Web.WebView2.Core": "1.0.2792.45",
+          "Microsoft.Web.WebView2.WinForms": "1.0.2792.45",
+          "Microsoft.Web.WebView2.Wpf": "1.0.2792.45"
+        },
+        "runtime": {
+          "App.Wpf.dll": {}
+        }
+      },
+      "EdgeTTS/1.0.3": {
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.3",
+          "System.ValueTuple": "4.5.0"
+        },
+        "runtime": {
+          "lib/net6.0/EdgeTTS.dll": {
+            "assemblyVersion": "1.0.3.0",
+            "fileVersion": "1.0.3.0"
+          }
+        }
+      },
+      "Microsoft.Extensions.DependencyInjection.Abstractions/9.0.4": {
+        "runtime": {
+          "lib/net8.0/Microsoft.Extensions.DependencyInjection.Abstractions.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.425.16305"
+          }
+        }
+      },
+      "Microsoft.Extensions.Logging.Abstractions/9.0.4": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.4",
+          "System.Diagnostics.DiagnosticSource": "9.0.4"
+        },
+        "runtime": {
+          "lib/net8.0/Microsoft.Extensions.Logging.Abstractions.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.425.16305"
+          }
+        }
+      },
+      "Microsoft.IO.RecyclableMemoryStream/3.0.0": {
+        "runtime": {
+          "lib/net6.0/Microsoft.IO.RecyclableMemoryStream.dll": {
+            "assemblyVersion": "3.0.0.0",
+            "fileVersion": "3.0.0.0"
+          }
+        }
+      },
+      "Microsoft.Web.WebView2/1.0.2792.45": {
+        "runtimeTargets": {
+          "runtimes/win-arm64/native/WebView2Loader.dll": {
+            "rid": "win-arm64",
+            "assetType": "native",
+            "fileVersion": "1.0.2792.45"
+          },
+          "runtimes/win-x64/native/WebView2Loader.dll": {
+            "rid": "win-x64",
+            "assetType": "native",
+            "fileVersion": "1.0.2792.45"
+          },
+          "runtimes/win-x86/native/WebView2Loader.dll": {
+            "rid": "win-x86",
+            "assetType": "native",
+            "fileVersion": "1.0.2792.45"
+          }
+        }
+      },
+      "Microsoft.Win32.SystemEvents/10.0.0": {
+        "runtime": {
+          "lib/net8.0/Microsoft.Win32.SystemEvents.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.52411"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/win/lib/net8.0/Microsoft.Win32.SystemEvents.dll": {
+            "rid": "win",
+            "assetType": "runtime",
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.52411"
+          }
+        }
+      },
+      "Newtonsoft.Json/13.0.3": {
+        "runtime": {
+          "lib/net6.0/Newtonsoft.Json.dll": {
+            "assemblyVersion": "13.0.0.0",
+            "fileVersion": "13.0.3.27908"
+          }
+        }
+      },
+      "obs-websocket-dotnet/5.0.1": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "9.0.4",
+          "Newtonsoft.Json": "13.0.3",
+          "Websocket.Client": "5.1.2"
+        },
+        "runtime": {
+          "lib/netstandard2.1/obs-websocket-dotnet.dll": {
+            "assemblyVersion": "5.0.1.0",
+            "fileVersion": "5.0.1.0"
+          }
+        }
+      },
+      "QRCoder/1.8.0": {
+        "dependencies": {
+          "System.Drawing.Common": "10.0.0"
+        },
+        "runtime": {
+          "lib/net6.0/QRCoder.dll": {
+            "assemblyVersion": "1.8.0.0",
+            "fileVersion": "1.8.0.0"
+          }
+        }
+      },
+      "System.Diagnostics.DiagnosticSource/9.0.4": {
+        "runtime": {
+          "lib/net8.0/System.Diagnostics.DiagnosticSource.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.425.16305"
+          }
+        }
+      },
+      "System.Drawing.Common/10.0.0": {
+        "dependencies": {
+          "Microsoft.Win32.SystemEvents": "10.0.0"
+        },
+        "runtime": {
+          "lib/net8.0/System.Drawing.Common.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.52411"
+          },
+          "lib/net8.0/System.Private.Windows.Core.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.52411"
+          },
+          "lib/net8.0/System.Private.Windows.GdiPlus.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.25.52411"
+          }
+        }
+      },
+      "System.Reactive/6.0.0": {
+        "runtime": {
+          "lib/net6.0/System.Reactive.dll": {
+            "assemblyVersion": "6.0.0.0",
+            "fileVersion": "6.0.0.1"
+          }
+        }
+      },
+      "System.Reflection.Emit/4.7.0": {},
+      "System.Speech/8.0.0": {
+        "runtime": {
+          "lib/net8.0/System.Speech.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53103"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/win/lib/net8.0/System.Speech.dll": {
+            "rid": "win",
+            "assetType": "runtime",
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53103"
+          }
+        }
+      },
+      "System.Threading.Channels/8.0.0": {},
+      "System.ValueTuple/4.5.0": {},
+      "Tesseract/5.2.0": {
+        "dependencies": {
+          "System.Reflection.Emit": "4.7.0"
+        },
+        "runtime": {
+          "lib/netstandard2.0/Tesseract.dll": {
+            "assemblyVersion": "5.2.0.0",
+            "fileVersion": "5.2.0.0"
+          }
+        }
+      },
+      "Websocket.Client/5.1.2": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "9.0.4",
+          "Microsoft.IO.RecyclableMemoryStream": "3.0.0",
+          "System.Reactive": "6.0.0",
+          "System.Threading.Channels": "8.0.0"
+        },
+        "runtime": {
+          "lib/net8.0/Websocket.Client.dll": {
+            "assemblyVersion": "5.1.2.0",
+            "fileVersion": "5.1.2.0"
+          }
+        }
+      },
+      "Microsoft.Web.WebView2.Core/1.0.2792.45": {
+        "runtime": {
+          "Microsoft.Web.WebView2.Core.dll": {
+            "assemblyVersion": "1.0.2792.45",
+            "fileVersion": "1.0.2792.45"
+          }
+        }
+      },
+      "Microsoft.Web.WebView2.WinForms/1.0.2792.45": {
+        "runtime": {
+          "Microsoft.Web.WebView2.WinForms.dll": {
+            "assemblyVersion": "1.0.2792.45",
+            "fileVersion": "1.0.2792.45"
+          }
+        }
+      },
+      "Microsoft.Web.WebView2.Wpf/1.0.2792.45": {
+        "runtime": {
+          "Microsoft.Web.WebView2.Wpf.dll": {
+            "assemblyVersion": "1.0.2792.45",
+            "fileVersion": "1.0.2792.45"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "App.Wpf/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "EdgeTTS/1.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-sbr3CzwltulYEepcnxP6M8s3VdixXfMNAF8EtCCEqArTpibMNt9SOrKOxNjmbMebuZpd4ibJhSxy2DuKIs2grw==",
+      "path": "edgetts/1.0.3",
+      "hashPath": "edgetts.1.0.3.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyInjection.Abstractions/9.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-UI0TQPVkS78bFdjkTodmkH0Fe8lXv9LnhGFKgKrsgUJ5a5FVdFRcgjIkBVLbGgdRhxWirxH/8IXUtEyYJx6GQg==",
+      "path": "microsoft.extensions.dependencyinjection.abstractions/9.0.4",
+      "hashPath": "microsoft.extensions.dependencyinjection.abstractions.9.0.4.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Logging.Abstractions/9.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0MXlimU4Dud6t+iNi5NEz3dO2w1HXdhoOLaYFuLPCjAsvlPQGwOT6V2KZRMLEhCAm/stSZt1AUv0XmDdkjvtbw==",
+      "path": "microsoft.extensions.logging.abstractions/9.0.4",
+      "hashPath": "microsoft.extensions.logging.abstractions.9.0.4.nupkg.sha512"
+    },
+    "Microsoft.IO.RecyclableMemoryStream/3.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-irv0HuqoH8Ig5i2fO+8dmDNdFdsrO+DoQcedwIlb810qpZHBNQHZLW7C/AHBQDgLLpw2T96vmMAy/aE4Yj55Sg==",
+      "path": "microsoft.io.recyclablememorystream/3.0.0",
+      "hashPath": "microsoft.io.recyclablememorystream.3.0.0.nupkg.sha512"
+    },
+    "Microsoft.Web.WebView2/1.0.2792.45": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-KOlLJSq70OySfU8mdhWdh9iOyApazWsIb6CmSz+YTJ5MmwLcsCLMW0qemORo7Si3A7VhLDIH3jwpMhPxodfkuA==",
+      "path": "microsoft.web.webview2/1.0.2792.45",
+      "hashPath": "microsoft.web.webview2.1.0.2792.45.nupkg.sha512"
+    },
+    "Microsoft.Win32.SystemEvents/10.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-bYdnhuD0XxcVTrxc8RyBjXo+AXYWJPnda3clhGz2Kakleyun1PyrzYV8RezT7ZYmR9OBSOgvpFQcvHo/K8Y90w==",
+      "path": "microsoft.win32.systemevents/10.0.0",
+      "hashPath": "microsoft.win32.systemevents.10.0.0.nupkg.sha512"
+    },
+    "Newtonsoft.Json/13.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ==",
+      "path": "newtonsoft.json/13.0.3",
+      "hashPath": "newtonsoft.json.13.0.3.nupkg.sha512"
+    },
+    "obs-websocket-dotnet/5.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-iV8P7q3hdzAjYdlga5pc/rE+Jk7PfgfD4saSx2JCyMYnJkQb97MpVLKTc+RYHoMX2m+3nCKQHaGhsdvrYXGjxA==",
+      "path": "obs-websocket-dotnet/5.0.1",
+      "hashPath": "obs-websocket-dotnet.5.0.1.nupkg.sha512"
+    },
+    "QRCoder/1.8.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-RuvX3PEXU6pbY/I5ItAk800jm62r+YnoPLgyS2WTgwxkOnGkOfU9ORiipHUF0LkLyqM8rlroUCA319JjRYfRFQ==",
+      "path": "qrcoder/1.8.0",
+      "hashPath": "qrcoder.1.8.0.nupkg.sha512"
+    },
+    "System.Diagnostics.DiagnosticSource/9.0.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Be0emq8bRmcK4eeJIFUt9+vYPf7kzuQrFs8Ef1CdGvXpq/uSve22PTSkRF09bF/J7wmYJ2DHf2v7GaT3vMXnwQ==",
+      "path": "system.diagnostics.diagnosticsource/9.0.4",
+      "hashPath": "system.diagnostics.diagnosticsource.9.0.4.nupkg.sha512"
+    },
+    "System.Drawing.Common/10.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-kohT9ZZlkB5R5ifihCBnPJLdIUQGiTj1ZI6z4LKatr+F4MmIJJu7qQpBkqt9280ivtnSvlTx9qZEY+CpJ0zMkA==",
+      "path": "system.drawing.common/10.0.0",
+      "hashPath": "system.drawing.common.10.0.0.nupkg.sha512"
+    },
+    "System.Reactive/6.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-31kfaW4ZupZzPsI5PVe77VhnvFF55qgma7KZr/E0iFTs6fmdhhG8j0mgEx620iLTey1EynOkEfnyTjtNEpJzGw==",
+      "path": "system.reactive/6.0.0",
+      "hashPath": "system.reactive.6.0.0.nupkg.sha512"
+    },
+    "System.Reflection.Emit/4.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-VR4kk8XLKebQ4MZuKuIni/7oh+QGFmZW3qORd1GvBq/8026OpW501SzT/oypwiQl4TvT8ErnReh/NzY9u+C6wQ==",
+      "path": "system.reflection.emit/4.7.0",
+      "hashPath": "system.reflection.emit.4.7.0.nupkg.sha512"
+    },
+    "System.Speech/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-CNuiA6vb95Oe5PRjClZEBiaju31vwB8OIeCgeSBXyZL6+MS4RVVB2X/C11z0xCkooHE3Vy91nM2z76emIzR+sg==",
+      "path": "system.speech/8.0.0",
+      "hashPath": "system.speech.8.0.0.nupkg.sha512"
+    },
+    "System.Threading.Channels/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-CMaFr7v+57RW7uZfZkPExsPB6ljwzhjACWW1gfU35Y56rk72B/Wu+sTqxVmGSk4SFUlPc3cjeKND0zktziyjBA==",
+      "path": "system.threading.channels/8.0.0",
+      "hashPath": "system.threading.channels.8.0.0.nupkg.sha512"
+    },
+    "System.ValueTuple/4.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-okurQJO6NRE/apDIP23ajJ0hpiNmJ+f0BwOlB/cSqTLQlw5upkf+5+96+iG2Jw40G1fCVCyPz/FhIABUjMR+RQ==",
+      "path": "system.valuetuple/4.5.0",
+      "hashPath": "system.valuetuple.4.5.0.nupkg.sha512"
+    },
+    "Tesseract/5.2.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-YB7feJlrTWSXtK8+WaCcseGSPK/1r2d2FWeKGyndlrPwYClrzTlCoHD4/oQEUjKafmpkWlhTZZ7pxiRJYZgj6w==",
+      "path": "tesseract/5.2.0",
+      "hashPath": "tesseract.5.2.0.nupkg.sha512"
+    },
+    "Websocket.Client/5.1.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-ZE5VoUCIYbfACGmXxgfD96i4W0wyBk0JEwIViyPpvxdk/pNfzh2SX9BgEj8fTqNaxlFl0bUTWq1UUvR/c18BTQ==",
+      "path": "websocket.client/5.1.2",
+      "hashPath": "websocket.client.5.1.2.nupkg.sha512"
+    },
+    "Microsoft.Web.WebView2.Core/1.0.2792.45": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.Web.WebView2.WinForms/1.0.2792.45": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.Web.WebView2.Wpf/1.0.2792.45": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

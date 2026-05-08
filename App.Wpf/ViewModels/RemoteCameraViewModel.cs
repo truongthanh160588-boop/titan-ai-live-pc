@@ -171,6 +171,7 @@ public sealed class RemoteCameraViewModel : ObservableObject
     public string RemoteMicPeakPercentText { get => _remoteMicPeakPercentText; private set => SetProperty(ref _remoteMicPeakPercentText, value); }
     public string RemoteMicStatusText { get => _remoteMicStatusText; private set => SetProperty(ref _remoteMicStatusText, value); }
     public Brush RemoteMicStatusBrush { get => _remoteMicStatusBrush; private set => SetProperty(ref _remoteMicStatusBrush, value); }
+
     public string HttpsWarningText =>
         (RemoteWebAppUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
          RemoteSignalingServerUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))

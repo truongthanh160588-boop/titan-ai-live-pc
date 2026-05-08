@@ -8,6 +8,7 @@ public sealed class RemoteCameraWebRtcReceiver
     {
         var baseUrl = settings.SignalingServerUrl.TrimEnd('/');
         var query = $"room={Uri.EscapeDataString(session.RoomCode)}&token={Uri.EscapeDataString(session.PairingToken)}";
-        return $"{baseUrl}/pc-preview?{query}";
+        var v = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return $"{baseUrl}/pc-preview?{query}&v={v}";
     }
 }

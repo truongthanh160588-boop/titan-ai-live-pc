@@ -25,6 +25,19 @@ Windows desktop application for simulated livestream selling support with OBS ov
 3. Set `App.Wpf` as startup project.
 4. Run the application.
 
+## One Build Folder (avoid testing wrong build)
+
+Use this script to always build to one fixed test location:
+
+`.\build-release-one.ps1`
+
+It will:
+
+- clean solution in `Release`
+- publish `App.Wpf` to `TitanAILivePC\_build\release\App.Wpf`
+- publish `TitanCameraServer` to `TitanAILivePC\_build\release\TitanCameraServer`
+- launch app from that fixed folder
+
 ## OBS Overlay Setup
 
 1. Run TitanAILivePC.

@@ -13,6 +13,9 @@
     "turns:global.relay.metered.ca:443?transport=tcp",
   ];
 
+  /** "relay" chỉ dùng TURN — dễ kẹt ICE; "all" cho host/STUN/TURN (ổn định hơn khi xem trên PC). */
+  const ICE_TRANSPORT_POLICY = "all";
+
   const params = new URLSearchParams(window.location.search);
   const room = params.get("room") || "";
   const token = params.get("token") || "";
@@ -43,10 +46,12 @@
   let reconnectTimer = null;
   const reconnectDelays = [2000, 5000, 10000, 10000, 10000];
   let mediaStream = null;
-  let useBackCamera = true;
   let micEnabled = false;
   let signalState = "DISCONNECTED";
   let peer = null;
+  /** ICE from pc-preview can arrive before setRemoteDescription(answer) — queue then flush. */
+  let pendingRemoteIceCandidates = [];
+  let loggedWebRtcIceConnectedPhone = false;
   /** Guards stale ws.onclose after user clicks CONNECT again */
   let connectionGeneration = 0;
   let audioLevelTimer = null;
@@ -310,15 +315,86 @@
   }
 
   function getVideoConstraints(profile) {
+    const standard = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 24, max: 30 },
+      facingMode: "environment",
+    };
+
     if (profile === "HD") {
-      return { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, facingMode: useBackCamera ? "environment" : "user" };
+      return {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 24, max: 30 },
+        facingMode: "environment",
+      };
+    }
+
+    if (profile === "SAFE_5G") {
+      return {
+        width: { ideal: 640 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 24, max: 30 },
+        facingMode: "environment",
+      };
     }
 
     if (profile === "LOW") {
-      return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: useBackCamera ? "environment" : "user" };
+      return { ...standard };
     }
 
-    return { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15, max: 15 }, facingMode: useBackCamera ? "environment" : "user" };
+    return { ...standard };
+  }
+
+  /** Prefer H.264 baseline (42e01f) for decoder compatibility; deprioritize exotic codecs. */
+  function preferH264BaselineVideoCodecs(pc) {
+    try {
+      if (!pc || typeof RTCRtpSender === "undefined" || !RTCRtpSender.getCapabilities) {
+        return;
+      }
+      const caps = RTCRtpSender.getCapabilities("video");
+      if (!caps || !Array.isArray(caps.codecs) || caps.codecs.length === 0) {
+        return;
+      }
+
+      const mime = c => (c.mimeType || "").toLowerCase();
+      const fmtp = c => (c.sdpFmtpLine || "").toLowerCase().replace(/\s/g, "");
+      const isRtxRedFec = c => {
+        const m = mime(c);
+        return m === "video/rtx" || m === "audio/rtx" || m.includes("red") || m.includes("ulpfec") || m.includes("flexfec");
+      };
+      const isAv1 = c => mime(c).includes("av01") || mime(c).includes("video/av1");
+      const isH264Baseline42e01f = c =>
+        mime(c) === "video/h264" && fmtp(c).includes("profile-level-id=42e01f");
+      const isH264 = c => mime(c) === "video/h264";
+      const isVp8 = c => mime(c) === "video/vp8";
+      const isVp9 = c => mime(c) === "video/vp9";
+
+      const baseline42 = caps.codecs.filter(isH264Baseline42e01f);
+      const h264Rest = caps.codecs.filter(c => isH264(c) && !isH264Baseline42e01f(c));
+      const vp8 = caps.codecs.filter(isVp8);
+      const vp9 = caps.codecs.filter(isVp9);
+      const remainder = caps.codecs.filter(c => !isH264(c) && !isVp8(c) && !isVp9(c));
+      const normalRest = remainder.filter(c => !isAv1(c) && !isRtxRedFec(c));
+      const unusualRest = remainder.filter(c => isAv1(c) || isRtxRedFec(c));
+
+      const preferred = [...baseline42, ...h264Rest, ...vp8, ...vp9, ...normalRest, ...unusualRest];
+
+      const transceivers = pc.getTransceivers().filter(t => t.sender && t.sender.track && t.sender.track.kind === "video");
+      transceivers.forEach(t => {
+        try {
+          if (typeof t.setCodecPreferences === "function") {
+            t.setCodecPreferences(preferred);
+          }
+        } catch (err) {
+          log("setCodecPreferences failed:", err && err.message ? err.message : err);
+        }
+      });
+      log("[WebRTC] codec preferences applied (H264 baseline 42e01f first where available)");
+    } catch (e) {
+      log("preferH264BaselineVideoCodecs:", e && e.message ? e.message : e);
+    }
   }
 
   function getSafe5GTargetBitrateKbps() {
@@ -406,6 +482,20 @@
     }));
   }
 
+  function iceServersListHasTurn(serverList) {
+    for (let i = 0; i < serverList.length; i++) {
+      const e = serverList[i];
+      const urls = Array.isArray(e.urls) ? e.urls : e.urls ? [e.urls] : [];
+      for (let j = 0; j < urls.length; j++) {
+        const s = String(urls[j]).toLowerCase();
+        if (s.startsWith("turn:") || s.startsWith("turns:")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   async function refreshIceServersFromNetwork() {
     const base = DEFAULT_SIGNALING_SERVER.replace(/\/+$/, "");
     try {
@@ -415,6 +505,20 @@
       }
       const data = await res.json();
       const list = Array.isArray(data.iceServers) ? data.iceServers : [];
+
+      if (list.length > 0 && !iceServersListHasTurn(list)) {
+        resolvedIceServers = JSON.parse(JSON.stringify(list));
+        hasTurnConfigured = true;
+        iceConfigFetchFailed = false;
+        log(
+          "ICE resolved: using /ice-config as-is (STUN-only — direct path test; set WEBRTC_STUN_ONLY_TEST=false on server for TURN)"
+        );
+        if (!peer && iceDiag) {
+          setIceDiag("ICE: —");
+        }
+        return;
+      }
+
       let username = "";
       let credential = "";
       for (let i = 0; i < list.length; i++) {
@@ -455,6 +559,8 @@
   }
 
   function closePeerConnection(reason) {
+    pendingRemoteIceCandidates = [];
+    loggedWebRtcIceConnectedPhone = false;
     clearTurnRelayProbe();
     stopPeerStatsLoop();
     if (peer) {
@@ -528,7 +634,8 @@
       headline = `ICE: ${ice.toUpperCase()}`;
     }
     const failIce = ice === "failed" || ice === "closed";
-    const policy = "TRANSPORT: RELAY ONLY";
+    const policy =
+      ICE_TRANSPORT_POLICY === "relay" ? "TRANSPORT: RELAY ONLY" : "TRANSPORT: ALL (host/STUN/TURN)";
     const relayDetect = sawRelayCandidate ? "relay detection: local relay candidate seen" : "relay detection: no local relay yet";
     const failLine = turnProbeFailed || failIce ? "\nTURN FAILED" : "";
     const gather = pc.iceGatheringState || "";
@@ -564,10 +671,18 @@
   }
 
   function attachPeerIceHandlers(pc) {
+    pc.onicecandidateerror = e => {
+      console.error("[WebRTC] ICE CANDIDATE ERROR", e);
+    };
     pc.oniceconnectionstatechange = () => {
+      console.log("[WebRTC] ICE STATE", pc.iceConnectionState);
       logIcePcStates(pc, "iceconnectionstatechange");
       updatePhoneIceDiagnostics(pc);
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        if (!loggedWebRtcIceConnectedPhone) {
+          loggedWebRtcIceConnectedPhone = true;
+          log("[WebRTC] ICE STATE connected");
+        }
         if (pendingPreviewReconnect) {
           log("ICE RECONNECTED");
           pendingPreviewReconnect = false;
@@ -581,10 +696,12 @@
       }
     };
     pc.onconnectionstatechange = () => {
+      console.log("[WebRTC] PC STATE", pc.connectionState);
       logIcePcStates(pc, "connectionstatechange");
       updatePhoneIceDiagnostics(pc);
     };
     pc.onicegatheringstatechange = () => {
+      console.log("[WebRTC] ICE GATHER", pc.iceGatheringState);
       logIcePcStates(pc, "icegatheringstatechange");
       updatePhoneIceDiagnostics(pc);
     };
@@ -600,7 +717,7 @@
     } catch (e) {
       iceConfigFetchFailed = true;
       log("ICE config failed — cannot start WebRTC", e && e.message ? e.message : e);
-      setStatus("ICE CONFIG FAILED\nSet TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL on Render.");
+      setStatus("ICE CONFIG FAILED\nGET /ice-config failed. Kiểm tra server hoặc bỏ WEBRTC_STUN_ONLY_TEST nếu cần TURN.");
       return;
     }
 
@@ -617,14 +734,18 @@
     turnProbeFailed = false;
 
     closePeerConnection("restart offer: " + reason);
+    if (reason === "preview-reconnect") {
+      log("RESTART OFFER · new RTCPeerConnection + tracks");
+    }
 
     peer = new RTCPeerConnection({
       iceServers,
-      iceTransportPolicy: "relay",
+      iceTransportPolicy: ICE_TRANSPORT_POLICY,
     });
     mediaStream.getVideoTracks().forEach(track => peer.addTrack(track, mediaStream));
     mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
     await tuneVideoSenderForProfile(peer, qualitySelect.value);
+    preferH264BaselineVideoCodecs(peer);
 
     attachPeerIceHandlers(peer);
 
@@ -649,22 +770,25 @@
       updatePhoneIceDiagnostics(peer);
     };
 
-    turnRelayProbeTimer = setTimeout(() => {
-      turnRelayProbeTimer = null;
-      if (!peer) {
-        return;
-      }
-      if (!sawRelayCandidate) {
-        turnProbeFailed = true;
-        log("TURN FAILED (no relay candidate within 10s)");
-        updatePhoneIceDiagnostics(peer);
-      }
-    }, 10000);
+    if (ICE_TRANSPORT_POLICY === "relay") {
+      turnRelayProbeTimer = setTimeout(() => {
+        turnRelayProbeTimer = null;
+        if (!peer) {
+          return;
+        }
+        if (!sawRelayCandidate) {
+          turnProbeFailed = true;
+          log("TURN FAILED (no relay candidate within 10s)");
+          updatePhoneIceDiagnostics(peer);
+        }
+      }, 10000);
+    }
 
     const offer = await peer.createOffer();
     const tunedSdp = applySafe5GBitrateToSdp(offer.sdp, qualitySelect.value);
     await peer.setLocalDescription({ type: "offer", sdp: tunedSdp });
     ws.send(JSON.stringify({ type: "offer", sdp: tunedSdp }));
+    console.log("[WebRTC] OFFER SENT");
     if (reason === "preview-reconnect") {
       log("OFFER RESENT");
       pendingPreviewReconnect = true;
@@ -752,7 +876,7 @@
       preview.srcObject = mediaStream;
       preview.muted = true;
       await preview.play();
-      micPermissionDenied = false;
+      micPermissionDenied = mediaStream.getAudioTracks().length === 0;
       startMicAnalysis(mediaStream);
       sendCameraReady(roomCode);
       await startWebRtcOffer(roomCode, "start-camera");
@@ -840,6 +964,7 @@
     closeExistingSocket();
 
     const wsUrl = buildPhoneWebSocketUrl(roomCode, pairingToken);
+    console.log("[WebRTC] WS URL =", wsUrl);
     log("Opening WebSocket (gen", gen, ")", wsUrl);
 
     const socket = new WebSocket(wsUrl);
@@ -853,6 +978,7 @@
       const wasReconnect = isRetry || reconnectAttempt > 0;
       reconnectAttempt = 0;
       signalState = "CONNECTED";
+      console.log("[WebRTC] WS OPEN phone room=", roomCode, "tokenLen=", pairingToken ? pairingToken.length : 0);
       log("WebSocket OPEN — loading ICE config");
       try {
         await refreshIceServersFromNetwork();
@@ -872,6 +998,7 @@
         role: "phone",
       };
       socket.send(JSON.stringify(joinRoom));
+      console.log("[WebRTC] JOIN SENT phone");
 
       socket.send(JSON.stringify({ type: "hello", role: "phone", room: roomCode }));
 
@@ -890,6 +1017,10 @@
       try {
         const data = JSON.parse(event.data);
         const t = data && data.type;
+        console.log("[WebRTC] WS RAW IN:", t || "?");
+        if (t === "preview-reconnect") {
+          console.log("[WebRTC] WS RAW IN preview-join");
+        }
 
         if (t === "heartbeat-ack") {
           signalState = "CONNECTED";
@@ -910,7 +1041,27 @@
           stopAudioLevelReporting();
           stopCamera();
         } else if (t === "answer" && data.sdp && peer) {
-          peer.setRemoteDescription({ type: "answer", sdp: data.sdp }).catch(() => {});
+          log("[WebRTC] ANSWER RECEIVED");
+          log("ANSWER RECEIVED sdp.length=", data.sdp ? data.sdp.length : 0);
+          peer
+            .setRemoteDescription({ type: "answer", sdp: data.sdp })
+            .then(async () => {
+              log("SET REMOTE ANSWER OK");
+              while (pendingRemoteIceCandidates.length) {
+                const c = pendingRemoteIceCandidates.shift();
+                try {
+                  await peer.addIceCandidate(c);
+                  log("[WebRTC] REMOTE ICE ADDED");
+                  log("REMOTE ICE ADDED (was queued)");
+                } catch (iceErr) {
+                  log("REMOTE ICE queued add failed", iceErr && iceErr.message ? iceErr.message : iceErr);
+                }
+              }
+            })
+            .catch(err => log("SET REMOTE ANSWER FAILED", err && err.message ? err.message : err));
+        } else if (t === "ice-candidate" && data.candidate && !peer) {
+          pendingRemoteIceCandidates.push(data.candidate);
+          log("REMOTE ICE QUEUED (no PeerConnection yet)");
         } else if (t === "ice-candidate" && data.candidate && peer) {
           const rc = data.candidate;
           log("[ICE FULL REMOTE]", rc.candidate != null ? rc.candidate : JSON.stringify(rc));
@@ -921,18 +1072,39 @@
           if (candidateLooksRelay(rc)) {
             log("relay detection: remote typ relay");
           }
-          peer.addIceCandidate(data.candidate).catch(() => {});
+          if (!peer.remoteDescription) {
+            pendingRemoteIceCandidates.push(data.candidate);
+            log("REMOTE ICE QUEUED (awaiting remote answer SDP)");
+            return;
+          }
+          peer
+            .addIceCandidate(data.candidate)
+            .then(() => {
+              log("[WebRTC] REMOTE ICE ADDED");
+              log("REMOTE ICE ADDED");
+            })
+            .catch(e => log("REMOTE ICE add failed", e && e.message ? e.message : e));
         } else if (t === "preview-reconnect") {
-          log("PREVIEW RECONNECTED");
+          console.log("[WebRTC] PREVIEW JOIN RECEIVED");
+          log("PREVIEW JOIN RECEIVED (preview-reconnect)");
+          pendingRemoteIceCandidates = [];
           if (!mediaStream) {
             setStatus("PREVIEW RECONNECTED\nStart camera to resend offer");
             return;
           }
           const activeRoom = (roomInput.value || "").trim().toUpperCase();
-          log("RESTARTING WEBRTC");
-          startWebRtcOffer(activeRoom, "preview-reconnect").catch(err => {
-            log("preview-reconnect renegotiate failed", err);
-          });
+          console.log("[WebRTC] RESTART OFFER");
+          log("RESTART OFFER scheduled");
+          window.setTimeout(() => {
+            startWebRtcOffer(activeRoom, "preview-reconnect")
+              .then(() => {
+                console.log("[WebRTC] OFFER SENT");
+                log("OFFER SENT (after preview-reconnect)");
+              })
+              .catch(err => {
+                log("preview-reconnect renegotiate failed", err);
+              });
+          }, 400);
         } else {
           setStatus(`SIGNAL CONNECTED\n${event.data}`);
         }
@@ -989,7 +1161,6 @@
       return;
     }
 
-    useBackCamera = !useBackCamera;
     await startCamera();
   });
 
@@ -1006,6 +1177,11 @@
       sendCameraReady(roomCode);
       setStatus(`MIC ${micEnabled ? "ON" : "OFF"}\nVIDEO STABLE MODE`);
       tickSendAudioLevel();
+      if (micEnabled) {
+        startMicAnalysis(mediaStream);
+      } else {
+        stopMicAnalysis();
+      }
       refreshOperatorUi();
     } else {
       updateMicMeterUi(0);
