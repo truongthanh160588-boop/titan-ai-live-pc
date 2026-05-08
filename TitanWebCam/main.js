@@ -624,6 +624,12 @@
       const constraints = {
         video: getVideoConstraints(qualitySelect.value),
         audio: micEnabled
+          ? {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+          : false
       };
       mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       preview.srcObject = mediaStream;

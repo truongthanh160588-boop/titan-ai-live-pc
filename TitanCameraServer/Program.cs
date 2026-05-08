@@ -229,15 +229,23 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  <!doctype html>
                  <html>
                  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:11px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.wrap{position:relative;width:100%;height:calc(100vh - 52px)}video{width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#e7edf7;font-size:17px;font-weight:700;pointer-events:none;text-align:center;padding:16px}.media-overlay.show{display:flex}</style>
-                 </head><body><div class="box status" id="status">ICE CONNECTING</div><div class="wrap"><video id="remoteVideo" autoplay playsinline muted></video><div id="mediaOverlay" class="media-overlay">WAITING FOR MEDIA</div></div>
+                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:11px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.meter{font-size:11px;color:#9fe6b1;margin-top:4px}.audio-btn{margin-top:6px;padding:6px 10px;border:1px solid #2b7cff;border-radius:7px;background:#102238;color:#d7e9ff;font-weight:600;display:none;cursor:pointer}.wrap{position:relative;width:100%;height:calc(100vh - 86px)}video{width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#e7edf7;font-size:17px;font-weight:700;pointer-events:none;text-align:center;padding:16px}.media-overlay.show{display:flex}</style>
+                 </head><body><div class="box status" id="status">ICE CONNECTING</div><div class="box meter" id="audioMeter">REMOTE MIC PEAK: 0%</div><div class="box"><button id="unmuteAudio" class="audio-btn">UNMUTE AUDIO</button></div><div class="wrap"><video id="remoteVideo" autoplay playsinline muted></video><div id="mediaOverlay" class="media-overlay">WAITING FOR MEDIA</div></div>
                  <script>
                  const room = {{JsonSerializer.Serialize(room)}};
                  const token = {{JsonSerializer.Serialize(token)}};
                  const iceConfigUrl = location.origin + "/ice-config";
                  const statusEl = document.getElementById("status");
+                 const audioMeterEl = document.getElementById("audioMeter");
+                 const unmuteBtn = document.getElementById("unmuteAudio");
                  const remoteVideo = document.getElementById("remoteVideo");
                  const mediaOverlay = document.getElementById("mediaOverlay");
+                 const remoteAudio = document.createElement("audio");
+                 remoteAudio.autoplay = true;
+                 remoteAudio.playsInline = true;
+                 remoteAudio.muted = false;
+                 remoteAudio.style.display = "none";
+                 document.body.appendChild(remoteAudio);
                  const protocol = location.protocol === "https:" ? "wss" : "ws";
                  const wsUrl = protocol + "://" + location.host + "/ws?room=" + encodeURIComponent(room) + "&role=pc-preview&token=" + encodeURIComponent(token);
 
@@ -247,6 +255,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  var sawRelayCandidate = false;
                  var turnProbeFailed = false;
                  var turnRelayProbeTimer = null;
+                 var audioState = "AUDIO WAITING";
+                 var audioCtx = null;
+                 var audioAnalyser = null;
+                 var audioAnalyserData = null;
+                 var audioRaf = null;
 
                  function clearTurnRelayProbe() {
                    if (turnRelayProbeTimer) { clearTimeout(turnRelayProbeTimer); turnRelayProbeTimer = null; }
@@ -302,6 +315,69 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    console.log("[pc-preview] ICE servers from env:", mergedIceServers ? mergedIceServers.length : 0, "entries; has TURN URI:", hasTurnGlobal);
                  }
 
+                 function stopAudioMeter() {
+                   if (audioRaf != null) {
+                     cancelAnimationFrame(audioRaf);
+                     audioRaf = null;
+                   }
+                   try {
+                     if (audioCtx && audioCtx.state !== "closed") audioCtx.close();
+                   } catch (err) { console.warn("[pc-preview] close audio ctx", err); }
+                   audioCtx = null;
+                   audioAnalyser = null;
+                   audioAnalyserData = null;
+                   audioMeterEl.textContent = "REMOTE MIC PEAK: 0%";
+                 }
+
+                 function startAudioMeter(stream) {
+                   stopAudioMeter();
+                   if (!stream) return;
+                   try {
+                     audioCtx = new AudioContext();
+                     var src = audioCtx.createMediaStreamSource(stream);
+                     audioAnalyser = audioCtx.createAnalyser();
+                     audioAnalyser.fftSize = 512;
+                     audioAnalyser.smoothingTimeConstant = 0.72;
+                     audioAnalyserData = new Uint8Array(audioAnalyser.fftSize);
+                     src.connect(audioAnalyser);
+                     function loop() {
+                       if (!audioAnalyser || !audioAnalyserData) return;
+                       audioAnalyser.getByteTimeDomainData(audioAnalyserData);
+                       var sum = 0;
+                       for (var i = 0; i < audioAnalyserData.length; i++) {
+                         var v = (audioAnalyserData[i] - 128) / 128;
+                         sum += v * v;
+                       }
+                       var rms = Math.sqrt(sum / audioAnalyserData.length);
+                       var pct = Math.max(0, Math.min(100, Math.round(rms * 180)));
+                       audioMeterEl.textContent = "REMOTE MIC PEAK: " + pct + "%";
+                       audioRaf = requestAnimationFrame(loop);
+                     }
+                     loop();
+                   } catch (err) {
+                     console.warn("[pc-preview] audio meter failed", err);
+                   }
+                 }
+
+                 async function playRemoteAudio() {
+                   try {
+                     await remoteAudio.play();
+                     audioState = remoteAudio.muted ? "AUDIO MUTED" : "AUDIO PLAYING";
+                     unmuteBtn.style.display = remoteAudio.muted ? "inline-block" : "none";
+                     console.log("[pc-preview] AUDIO PLAYING", "readyState=", remoteAudio.readyState, "paused=", remoteAudio.paused, "muted=", remoteAudio.muted);
+                   } catch (err) {
+                     audioState = "AUDIO BLOCKED";
+                     unmuteBtn.style.display = "inline-block";
+                     console.error("[pc-preview] AUDIO BLOCKED", err, "readyState=", remoteAudio.readyState, "paused=", remoteAudio.paused, "muted=", remoteAudio.muted);
+                   }
+                 }
+
+                 unmuteBtn.addEventListener("click", async function () {
+                   remoteAudio.muted = false;
+                   await playRemoteAudio();
+                   updateDiag();
+                 });
+
                  let pc = null;
                  let ws = null;
                  let statsTimer = null;
@@ -341,6 +417,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    var turnFailedLine = (turnProbeFailed || failIce) ? "\nTURN FAILED" : "";
                    var cfgLine = iceConfigLoadFailed ? "\nICE CONFIG FAILED (check Render TURN_* env)" : (!hasTurnGlobal ? "\nICE CONFIG EMPTY (set TURN_URLS on Render)" : "");
                    var relayDetect = sawRelayCandidate ? "\nrelay detection: local relay candidate seen" : "\nrelay detection: no local relay yet";
+                   var audioLine = "\n" + audioState + "\nremoteAudio.readyState=" + remoteAudio.readyState + " paused=" + remoteAudio.paused + " muted=" + remoteAudio.muted;
                    var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + "\niceTransportPolicy=relay";
                    pc.getStats().then(function (report) {
                      var best = null;
@@ -361,9 +438,9 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        if (relay) console.log("[pc-preview] relay detection: active path uses TURN relay");
                        extra = (relay ? "\nTURN RELAY ACTIVE" : "") + "\nPAIR: " + lt + " → " + rt;
                      }
-                     statusEl.textContent = line + extra + cfgLine + relayDetect + turnFailedLine + gatherLine;
+                     statusEl.textContent = line + extra + cfgLine + relayDetect + turnFailedLine + audioLine + gatherLine;
                      console.log("[pc-preview][diag]", statusEl.textContent);
-                   }).catch(function () { statusEl.textContent = line + cfgLine + relayDetect + turnFailedLine + gatherLine; });
+                   }).catch(function () { statusEl.textContent = line + cfgLine + relayDetect + turnFailedLine + audioLine + gatherLine; });
                  }
 
                  function logLocalIce(ev) {
@@ -377,6 +454,10 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    stopStats();
                    clearMediaWait();
                    clearTurnRelayProbe();
+                   stopAudioMeter();
+                   remoteAudio.srcObject = null;
+                   unmuteBtn.style.display = "none";
+                   audioState = "AUDIO WAITING";
                    if (pc) {
                      try { pc.close(); } catch (e) {}
                      pc = null;
@@ -422,24 +503,25 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      }
                      updateDiag();
                    };
-                   pc.ontrack = function (e) {
+                   pc.ontrack = async function (e) {
+                     var stream = e.streams && e.streams[0];
                      if (e.track.kind === "audio") {
-                       console.log("[pc-preview] AUDIO TRACK RECEIVED (muted — no PC speaker output)");
-                       try {
-                         var silent = document.createElement("audio");
-                         var ms = e.streams && e.streams[0];
-                         if (ms) silent.srcObject = ms;
-                         silent.muted = true;
-                         silent.volume = 0;
-                         silent.autoplay = true;
-                         silent.style.display = "none";
-                         document.body.appendChild(silent);
-                       } catch (err) { console.warn("[pc-preview] audio element:", err); }
+                       console.log("[pc-preview] AUDIO TRACK RECEIVED");
+                       if (stream) {
+                         remoteAudio.srcObject = stream;
+                         remoteAudio.muted = false;
+                         startAudioMeter(stream);
+                         await playRemoteAudio();
+                         if (remoteAudio.muted) {
+                           audioState = "AUDIO MUTED";
+                           console.log("[pc-preview] AUDIO MUTED");
+                         }
+                       }
                        updateDiag();
                        return;
                      }
-                     if (e.track.kind === "video") {
-                       remoteVideo.srcObject = e.streams[0];
+                     if (e.track.kind === "video" && stream) {
+                       remoteVideo.srcObject = stream;
                        remoteVideo.onloadeddata = hideMediaWaitIfPlaying;
                        remoteVideo.onresize = hideMediaWaitIfPlaying;
                        scheduleMediaWait();
@@ -529,6 +611,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      closePc();
                      remoteVideo.srcObject = null;
                      mediaOverlay.classList.remove("show");
+                     audioMeterEl.textContent = "REMOTE MIC PEAK: 0%";
                    }
                  };
                  ws.onclose = function () {
@@ -536,6 +619,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    closePc();
                    remoteVideo.srcObject = null;
                    mediaOverlay.classList.remove("show");
+                   audioMeterEl.textContent = "REMOTE MIC PEAK: 0%";
                  };
                  </script></body></html>
                  """;
