@@ -710,6 +710,13 @@ app.Map("/ws", async context =>
         if (type.Equals("audio-level", StringComparison.OrdinalIgnoreCase))
         {
             room.Touch(role);
+            if (role == "phone")
+            {
+                // Keep PC app mic status alive even when preview socket is active.
+                await SendRawAsync(room.PcSocket, json, CancellationToken.None);
+                await SendRawAsync(room.PcPreviewSocket, json, CancellationToken.None);
+                continue;
+            }
         }
 
         WebSocket? target = role switch
