@@ -627,6 +627,8 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      statusEl.textContent = "ICE CONNECTING";
                    }
                    ws.send(JSON.stringify({ type: "hello", role: "pc-preview", room }));
+                   ws.send(JSON.stringify({ type: "preview-join", room, token }));
+                   console.log("[pc-preview] PREVIEW RECONNECTED");
                  };
                  ws.onmessage = async function (evt) {
                    var msg = JSON.parse(evt.data);
@@ -754,6 +756,14 @@ app.Map("/ws", async context =>
         {
             room.Touch(role);
             await SendJsonAsync(socket, new { type = "joined", ok = true }, CancellationToken.None);
+            continue;
+        }
+
+        if (type.Equals("preview-join", StringComparison.OrdinalIgnoreCase) && role == "pc-preview")
+        {
+            room.Touch(role);
+            await SendJsonAsync(room.PhoneSocket, new { type = "preview-reconnect", room = room.RoomCode }, CancellationToken.None);
+            logger.LogInformation("Preview reconnected, notifying phone in room {RoomCode}", room.RoomCode);
             continue;
         }
 

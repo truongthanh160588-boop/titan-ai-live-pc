@@ -67,6 +67,7 @@
   /** True after local ICE candidate string contained typ relay (or RTCIceCandidate.type relay). */
   let sawRelayCandidate = false;
   let turnProbeFailed = false;
+  let pendingPreviewReconnect = false;
 
   function clearTurnRelayProbe() {
     if (turnRelayProbeTimer) {
@@ -416,6 +417,20 @@
     }
   }
 
+  function closePeerConnection(reason) {
+    clearTurnRelayProbe();
+    stopPeerStatsLoop();
+    if (peer) {
+      try {
+        peer.close();
+      } catch (_) {}
+      peer = null;
+    }
+    if (reason) {
+      log("peer closed:", reason);
+    }
+  }
+
   function setIceDiag(text) {
     if (iceDiag) {
       iceDiag.textContent = text;
@@ -516,6 +531,10 @@
       logIcePcStates(pc, "iceconnectionstatechange");
       updatePhoneIceDiagnostics(pc);
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        if (pendingPreviewReconnect) {
+          log("ICE RECONNECTED");
+          pendingPreviewReconnect = false;
+        }
         clearTurnRelayProbe();
         logSelectedIcePair(pc);
         startPeerStatsLoop(pc);
@@ -534,7 +553,7 @@
     };
   }
 
-  async function startWebRtcOffer(roomCode) {
+  async function startWebRtcOffer(roomCode, reason = "normal") {
     if (!ws || ws.readyState !== WebSocket.OPEN || !mediaStream) {
       return;
     }
@@ -560,12 +579,7 @@
     sawRelayCandidate = false;
     turnProbeFailed = false;
 
-    if (peer) {
-      try {
-        peer.close();
-      } catch (_) {}
-      peer = null;
-    }
+    closePeerConnection("restart offer: " + reason);
 
     peer = new RTCPeerConnection({
       iceServers,
@@ -616,6 +630,10 @@
     const tunedSdp = applySafe5GBitrateToSdp(offer.sdp, qualitySelect.value);
     await peer.setLocalDescription({ type: "offer", sdp: tunedSdp });
     ws.send(JSON.stringify({ type: "offer", sdp: tunedSdp }));
+    if (reason === "preview-reconnect") {
+      log("OFFER RESENT");
+      pendingPreviewReconnect = true;
+    }
     updatePhoneIceDiagnostics(peer);
     logIcePcStates(peer, "after setLocalDescription offer");
     setStatus("CAMERA ON\nSENDING WEBRTC OFFER...");
@@ -643,15 +661,8 @@
     mediaStream = null;
     preview.srcObject = null;
     sendCameraStopped();
-    clearTurnRelayProbe();
-    stopPeerStatsLoop();
+    closePeerConnection("camera stopped");
     setIceDiag(hasTurnConfigured && !iceConfigFetchFailed ? "ICE: —" : "ICE CONFIG FAILED\nCheck Render TURN_*");
-    if (peer) {
-      try {
-        peer.close();
-      } catch (_) {}
-      peer = null;
-    }
     setStatus("CAMERA OFF");
     refreshOperatorUi();
   }
@@ -692,7 +703,7 @@
       micPermissionDenied = false;
       startMicAnalysis(mediaStream);
       sendCameraReady(roomCode);
-      await startWebRtcOffer(roomCode);
+      await startWebRtcOffer(roomCode, "start-camera");
       setStatus(`CAMERA ON\nQUALITY: ${qualitySelect.value}\nMIC: ${micEnabled ? "ON" : "OFF"}`);
     } catch (error) {
       const msg = error && error.message ? error.message : "";
@@ -859,6 +870,17 @@
             log("relay detection: remote typ relay");
           }
           peer.addIceCandidate(data.candidate).catch(() => {});
+        } else if (t === "preview-reconnect") {
+          log("PREVIEW RECONNECTED");
+          if (!mediaStream) {
+            setStatus("PREVIEW RECONNECTED\nStart camera to resend offer");
+            return;
+          }
+          const activeRoom = (roomInput.value || "").trim().toUpperCase();
+          log("RESTARTING WEBRTC");
+          startWebRtcOffer(activeRoom, "preview-reconnect").catch(err => {
+            log("preview-reconnect renegotiate failed", err);
+          });
         } else {
           setStatus(`SIGNAL CONNECTED\n${event.data}`);
         }
