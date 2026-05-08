@@ -344,6 +344,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  var audioAnalyser = null;
                  var audioAnalyserData = null;
                  var audioRaf = null;
+                 var audioRetryTimer = null;
                  var videoDiagTimer = null;
                  var videoState = "NO VIDEO FRAMES";
                  var lastFrameCount = 0;
@@ -436,6 +437,22 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    audioMeterEl.textContent = "REMOTE MIC PEAK: 0%";
                  }
 
+                 function stopAudioRetry() {
+                   if (audioRetryTimer) {
+                     clearTimeout(audioRetryTimer);
+                     audioRetryTimer = null;
+                   }
+                 }
+
+                 function scheduleAudioRetry() {
+                   stopAudioRetry();
+                   audioRetryTimer = setTimeout(function () {
+                     audioRetryTimer = null;
+                     if (!remoteAudio.srcObject) return;
+                     playRemoteAudio();
+                   }, 1200);
+                 }
+
                  function stopVideoDiagnostics() {
                    if (videoDiagTimer) {
                      clearInterval(videoDiagTimer);
@@ -510,19 +527,27 @@ app.MapGet("/pc-preview", (HttpContext context) =>
 
                  async function playRemoteAudio() {
                    try {
+                     // Bootstrap with muted autoplay first, then unmute.
+                     remoteAudio.muted = true;
                      await remoteAudio.play();
-                     audioState = remoteAudio.muted ? "AUDIO MUTED" : "AUDIO PLAYING";
-                     unmuteBtn.style.display = remoteAudio.muted ? "inline-block" : "none";
+                     remoteAudio.muted = false;
+                     remoteAudio.volume = 1.0;
+                     audioState = "AUDIO PLAYING";
+                     unmuteBtn.style.display = "none";
+                     stopAudioRetry();
                      console.log("[pc-preview] AUDIO PLAYING", "readyState=", remoteAudio.readyState, "paused=", remoteAudio.paused, "muted=", remoteAudio.muted);
                    } catch (err) {
                      audioState = "AUDIO BLOCKED";
                      unmuteBtn.style.display = "inline-block";
+                     scheduleAudioRetry();
                      console.error("[pc-preview] AUDIO BLOCKED", err, "readyState=", remoteAudio.readyState, "paused=", remoteAudio.paused, "muted=", remoteAudio.muted);
                    }
                  }
 
                  unmuteBtn.addEventListener("click", async function () {
+                   stopAudioRetry();
                    remoteAudio.muted = false;
+                   remoteAudio.volume = 1.0;
                    await playRemoteAudio();
                    updateDiag();
                  });
@@ -855,6 +880,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    clearTurnRelayProbe();
                    stopVideoDiagnostics();
                    stopAudioMeter();
+                   stopAudioRetry();
                    resetMediaOverlay();
                    remoteAudio.srcObject = null;
                    unmuteBtn.style.display = "none";
