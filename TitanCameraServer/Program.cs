@@ -257,21 +257,40 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  <!doctype html>
                  <html>
                  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-store">
-                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:12px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.status-head{font-size:13px;font-weight:700;color:#ffb74d;margin-bottom:4px}.status-head.bad{color:#ff8a80}.meter{font-size:11px;color:#9fe6b1;margin-top:4px}.audio-btn{margin-top:6px;padding:6px 10px;border:1px solid #2b7cff;border-radius:7px;background:#102238;color:#d7e9ff;font-weight:600;display:none;cursor:pointer}.wrap{position:relative;width:100%;height:calc(100vh - 86px)}.wrap video{position:relative;z-index:0;width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.82);color:#e7edf7;font-size:16px;font-weight:700;pointer-events:none;text-align:center;padding:16px;line-height:1.45;white-space:pre-wrap}.media-overlay.show{display:flex}.media-overlay.error{background:rgba(72,16,16,.94);color:#ffc9c9;border:2px solid #c44}</style>
+                 <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{display:none;font-size:12px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.status-head{font-size:13px;font-weight:700;color:#ffb74d;margin-bottom:4px}.status-head.bad{color:#ff8a80}.meter{font-size:11px;color:#9fe6b1;margin-top:4px}.audio-btn{margin-top:6px;padding:6px 10px;border:1px solid #2b7cff;border-radius:7px;background:#102238;color:#d7e9ff;font-weight:600;display:none;cursor:pointer}.wrap{position:relative;width:100%;height:calc(100vh - 86px)}.wrap video{position:relative;z-index:0;width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.82);color:#e7edf7;font-size:16px;font-weight:700;pointer-events:none;text-align:center;padding:16px;line-height:1.45;white-space:pre-wrap}.media-overlay.show{display:flex}.media-overlay.error{background:rgba(72,16,16,.94);color:#ffc9c9;border:2px solid #c44}</style>
                  </head><body><div class="box status" id="status"><div class="status-head" id="statusHead"></div><span id="statusBody">ICE CONNECTING</span></div><div class="box meter" id="audioMeter">REMOTE MIC PEAK: 0%</div><div class="box"><button id="unmuteAudio" class="audio-btn">UNMUTE AUDIO</button></div><div class="wrap"><video id="remoteVideo" autoplay muted playsinline webkit-playsinline style="width:100%;height:100%;background:#000;object-fit:contain"></video><div id="mediaOverlay" class="media-overlay">Đang chờ hình…</div></div>
                  <script>
                  const room = {{JsonSerializer.Serialize(room)}};
                  const token = {{JsonSerializer.Serialize(token)}};
                  const BUILD_TAG = "pc-preview-join-all-20260508-final";
-                 document.body.insertAdjacentHTML("afterbegin",
-                   "<div style='padding:4px 8px;color:#00ff99;font-size:12px;font-family:monospace'>BUILD: " + BUILD_TAG + "</div>");
-                 console.log("[BUILD]", BUILD_TAG);
+                 const SHOW_PREVIEW_DEBUG = false;
+                 if (SHOW_PREVIEW_DEBUG) {
+                   document.body.insertAdjacentHTML("afterbegin",
+                     "<div style='padding:4px 8px;color:#00ff99;font-size:12px;font-family:monospace'>BUILD: " + BUILD_TAG + "</div>");
+                   console.log("[BUILD]", BUILD_TAG);
+                 }
                  console.log("[pc-preview] boot query:", window.location.search);
                  console.log("[pc-preview] room=", room, "token=", token, "token.length=", token ? token.length : 0);
                  const iceConfigUrl = location.origin + "/ice-config";
+                 const statusWrap = document.getElementById("status");
                  const statusHead = document.getElementById("statusHead");
                  const statusBody = document.getElementById("statusBody");
                  const audioMeterEl = document.getElementById("audioMeter");
+                 function isPreviewStable() {
+                   return !!pc &&
+                     !previewErrorActive &&
+                     (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") &&
+                     remoteVideo.videoWidth > 0 &&
+                     remoteVideo.readyState >= 2;
+                 }
+                 function applyStatusVisibility(forceShow) {
+                   if (!statusWrap) return;
+                   if (forceShow) {
+                     statusWrap.style.display = "block";
+                     return;
+                   }
+                   statusWrap.style.display = isPreviewStable() ? "none" : "block";
+                 }
                  function setPreviewStatus(headline, bodyText, headlineBad) {
                    if (headline) {
                      statusHead.textContent = headline;
@@ -283,6 +302,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      statusHead.className = "status-head";
                    }
                    statusBody.textContent = bodyText || "";
+                   applyStatusVisibility(!!headlineBad);
                  }
                  const unmuteBtn = document.getElementById("unmuteAudio");
                  const remoteVideo = document.getElementById("remoteVideo");
