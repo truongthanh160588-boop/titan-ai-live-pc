@@ -109,6 +109,7 @@ app.MapGet("/ice-config", () =>
 });
 
 var rooms = new ConcurrentDictionary<string, RoomState>(StringComparer.OrdinalIgnoreCase);
+var socketSendLocks = new ConcurrentDictionary<WebSocket, SemaphoreSlim>();
 
 app.MapGet("/health", () => Results.Ok(new
 {
@@ -619,10 +620,10 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                      if (!gotRemoteOffer) {
                        showPreviewError(
                          "LỖI: Không nhận được offer từ điện thoại.\nĐảm bảo điện thoại đã mở camera đúng phòng và đang kết nối.",
-                         "LỖI · Hết thời gian chờ SDP offer (15s)");
-                       console.error("[pc-preview] TIMEOUT: no WebRTC offer from phone within 15s");
+                        "LỖI · Hết thời gian chờ SDP offer (30s)");
+                      console.error("[pc-preview] TIMEOUT: no WebRTC offer from phone within 30s");
                      }
-                   }, 15000);
+                   }, 30000);
                  }
 
                  function startVideoReceiveDeadline() {
@@ -1232,14 +1233,52 @@ app.Map("/ws", async context =>
     var buffer = new byte[16 * 1024];
     while (socket.State == WebSocketState.Open)
     {
-        var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+        WebSocketReceiveResult result;
+        using var messageBuffer = new MemoryStream();
+        do
+        {
+            result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                break;
+            }
+
+            if (result.Count > 0)
+            {
+                await messageBuffer.WriteAsync(buffer.AsMemory(0, result.Count), CancellationToken.None);
+            }
+        }
+        while (!result.EndOfMessage);
+
         if (result.MessageType == WebSocketMessageType.Close)
         {
             break;
         }
 
-        var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-        using var document = JsonDocument.Parse(json);
+        if (result.MessageType != WebSocketMessageType.Text)
+        {
+            break;
+        }
+
+        var json = Encoding.UTF8.GetString(messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Invalid JSON from role={Role} room={Room}; payloadLength={Length}",
+                role,
+                roomCode,
+                json.Length);
+            continue;
+        }
+
+        using (document)
+        {
         var type = document.RootElement.TryGetProperty("type", out var typeElement)
             ? typeElement.GetString() ?? string.Empty
             : string.Empty;
@@ -1408,6 +1447,7 @@ app.Map("/ws", async context =>
         }
 
         await SendRawAsync(target, json, CancellationToken.None);
+        }
     }
 
     if (role == "pc")
@@ -1476,7 +1516,7 @@ _ = Task.Run(async () =>
 
 app.Run();
 
-static async Task<int> FlushIceQueueAsync(ConcurrentQueue<string> queue, WebSocket? socket, CancellationToken cancellationToken)
+async Task<int> FlushIceQueueAsync(ConcurrentQueue<string> queue, WebSocket? socket, CancellationToken cancellationToken)
 {
     if (socket is null || socket.State != WebSocketState.Open)
     {
@@ -1493,7 +1533,7 @@ static async Task<int> FlushIceQueueAsync(ConcurrentQueue<string> queue, WebSock
     return n;
 }
 
-static string DescribeWsPeer(WebSocket? target, RoomState room)
+string DescribeWsPeer(WebSocket? target, RoomState room)
 {
     if (target is null)
     {
@@ -1518,24 +1558,38 @@ static string DescribeWsPeer(WebSocket? target, RoomState room)
     return "unknown";
 }
 
-static async Task SendJsonAsync(WebSocket? socket, object payload, CancellationToken cancellationToken)
+async Task SendJsonAsync(WebSocket? socket, object payload, CancellationToken cancellationToken)
 {
     var json = JsonSerializer.Serialize(payload);
     await SendRawAsync(socket, json, cancellationToken);
 }
 
-static async Task SendRawAsync(WebSocket? socket, string json, CancellationToken cancellationToken)
+async Task SendRawAsync(WebSocket? socket, string json, CancellationToken cancellationToken)
 {
     if (socket is null || socket.State != WebSocketState.Open)
     {
         return;
     }
 
+    var sendGate = socketSendLocks.GetOrAdd(socket, _ => new SemaphoreSlim(1, 1));
+    await sendGate.WaitAsync(cancellationToken);
+    try
+    {
+        if (socket.State != WebSocketState.Open)
+        {
+            return;
+        }
+
     var bytes = Encoding.UTF8.GetBytes(json);
     await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+    }
+    finally
+    {
+        sendGate.Release();
+    }
 }
 
-static async Task CloseSocketAsync(WebSocket? socket)
+async Task CloseSocketAsync(WebSocket? socket)
 {
     if (socket is null || socket.State != WebSocketState.Open)
     {
@@ -1548,6 +1602,13 @@ static async Task CloseSocketAsync(WebSocket? socket)
     }
     catch
     {
+    }
+    finally
+    {
+        if (socketSendLocks.TryRemove(socket, out var gate))
+        {
+            gate.Dispose();
+        }
     }
 }
 
