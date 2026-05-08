@@ -192,9 +192,7 @@ public sealed class RemoteCameraViewModel : ObservableObject
         State != RemoteCameraState.Offline;
     public bool IsRoomExpired => State == RemoteCameraState.Expired;
     public string TurnWarningText =>
-        string.IsNullOrWhiteSpace(_settings.TurnServerUrl)
-            ? "Remote 4G/5G may require TURN before video streaming."
-            : "TURN server configured.";
+        "Phone and PC preview load ICE/TURN from the signaling server GET /ice-config (Render: TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL — e.g. Metered.ca).";
 
     public RelayCommand CreateCameraRoomCommand { get; }
     public RelayCommand CopyLinkCommand { get; }

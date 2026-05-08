@@ -48,18 +48,9 @@ if (!string.IsNullOrWhiteSpace(port))
 app.UseCors();
 app.UseWebSockets();
 
-/// <summary>Build STUN + optional TURN from env (TURN_URLS comma-separated). No hardcoded third-party TURN.</summary>
+/// <summary>Metered.ca (or any TURN) from env: comma-separated <c>TURN_URLS</c> + <c>TURN_USERNAME</c> / <c>TURN_CREDENTIAL</c>.</summary>
 List<object> BuildIceServersFromEnv()
 {
-    var list = new List<object>();
-    var stunUrl = Environment.GetEnvironmentVariable("STUN_URL");
-    if (string.IsNullOrWhiteSpace(stunUrl))
-    {
-        stunUrl = "stun:stun.l.google.com:19302";
-    }
-
-    list.Add(new { urls = stunUrl });
-
     var turnUrlsRaw = Environment.GetEnvironmentVariable("TURN_URLS") ?? "";
     var parts = turnUrlsRaw
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -70,19 +61,17 @@ List<object> BuildIceServersFromEnv()
     var turnUser = Environment.GetEnvironmentVariable("TURN_USERNAME") ?? "";
     var turnCred = Environment.GetEnvironmentVariable("TURN_CREDENTIAL") ?? "";
 
-    if (parts.Length > 0)
+    if (parts.Length == 0)
     {
-        if (parts.Length == 1)
-        {
-            list.Add(new { urls = parts[0], username = turnUser, credential = turnCred });
-        }
-        else
-        {
-            list.Add(new { urls = parts, username = turnUser, credential = turnCred });
-        }
+        return [];
     }
 
-    return list;
+    if (parts.Length == 1)
+    {
+        return [new { urls = parts[0], username = turnUser, credential = turnCred }];
+    }
+
+    return [new { urls = parts, username = turnUser, credential = turnCred }];
 }
 
 app.MapGet("/ice-config", () =>
@@ -235,24 +224,16 @@ app.MapGet("/pc-preview", (HttpContext context) =>
 {
     var room = context.Request.Query["room"].ToString();
     var token = context.Request.Query["token"].ToString();
-    var stun = context.Request.Query["stun"].ToString();
-    var turn = context.Request.Query["turn"].ToString();
-    var turnUser = context.Request.Query["turnUser"].ToString();
-    var turnPass = context.Request.Query["turnPass"].ToString();
 
     var html = $$"""
                  <!doctype html>
                  <html>
                  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
                  <style>body{margin:0;background:#0e1218;color:#e7edf7;font-family:Arial}.box{padding:8px}.status{font-size:11px;color:#9fc2e8;white-space:pre-wrap;line-height:1.35}.wrap{position:relative;width:100%;height:calc(100vh - 52px)}video{width:100%;height:100%;background:#000;object-fit:contain;display:block}.media-overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#e7edf7;font-size:17px;font-weight:700;pointer-events:none;text-align:center;padding:16px}.media-overlay.show{display:flex}</style>
-                 </head><body><div class="box status" id="status">ICE CONNECTING · STARTING...</div><div class="wrap"><video id="remoteVideo" autoplay playsinline muted></video><div id="mediaOverlay" class="media-overlay">WAITING FOR MEDIA</div></div>
+                 </head><body><div class="box status" id="status">ICE CONNECTING</div><div class="wrap"><video id="remoteVideo" autoplay playsinline muted></video><div id="mediaOverlay" class="media-overlay">WAITING FOR MEDIA</div></div>
                  <script>
                  const room = {{JsonSerializer.Serialize(room)}};
                  const token = {{JsonSerializer.Serialize(token)}};
-                 const stun = {{JsonSerializer.Serialize(stun)}};
-                 const turn = {{JsonSerializer.Serialize(turn)}};
-                 const turnUser = {{JsonSerializer.Serialize(turnUser)}};
-                 const turnPass = {{JsonSerializer.Serialize(turnPass)}};
                  const iceConfigUrl = location.origin + "/ice-config";
                  const statusEl = document.getElementById("status");
                  const remoteVideo = document.getElementById("remoteVideo");
@@ -261,6 +242,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  const wsUrl = protocol + "://" + location.host + "/ws?room=" + encodeURIComponent(room) + "&role=pc-preview&token=" + encodeURIComponent(token);
 
                  var mergedIceServers = null;
+                 var iceConfigLoadFailed = false;
                  var hasTurnGlobal = false;
                  var sawRelayCandidate = false;
                  var turnProbeFailed = false;
@@ -275,6 +257,15 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    if (c.type === "relay") return true;
                    var sdp = typeof c.candidate === "string" ? c.candidate : "";
                    return /\btyp\s+relay\b/i.test(sdp);
+                 }
+
+                 function remoteCandidateDiag(rc) {
+                   if (!rc) return { typ: "?", sdp: "" };
+                   var sdp = typeof rc.candidate === "string" ? rc.candidate : "";
+                   var typ = rc.type || "?";
+                   var m = sdp.match(/\btyp\s+(\w+)/i);
+                   if (m) typ = m[1].toLowerCase();
+                   return { typ: typ, sdp: sdp };
                  }
 
                  function logIcePcStates(pc, tag) {
@@ -293,33 +284,22 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    return false;
                  }
 
-                 function mergeIceServersFromApi(baseList) {
-                   var out = [];
-                   var seen = new Set();
-                   function add(entry) {
-                     var k = JSON.stringify(entry);
-                     if (!seen.has(k)) { seen.add(k); out.push(JSON.parse(JSON.stringify(entry))); }
-                   }
-                   baseList.forEach(add);
-                   if (stun) add({ urls: stun });
-                   if (turn) add({ urls: turn, username: turnUser || "", credential: turnPass || "" });
-                   return out;
-                 }
-
                  async function ensureIceServersForPreview() {
                    if (mergedIceServers) return;
+                   iceConfigLoadFailed = false;
                    try {
                      var r = await fetch(iceConfigUrl, { cache: "no-store" });
                      if (!r.ok) throw new Error("HTTP " + r.status);
                      var j = await r.json();
                      var base = Array.isArray(j.iceServers) ? j.iceServers : [];
-                     mergedIceServers = mergeIceServersFromApi(base);
+                     mergedIceServers = JSON.parse(JSON.stringify(base));
                    } catch (err) {
-                     console.warn("[pc-preview] /ice-config fetch failed", err);
-                     mergedIceServers = mergeIceServersFromApi([{ urls: "stun:stun.l.google.com:19302" }]);
+                     iceConfigLoadFailed = true;
+                     mergedIceServers = [];
+                     console.error("[pc-preview] /ice-config fetch failed", err);
                    }
-                   hasTurnGlobal = computeHasTurn(mergedIceServers);
-                   console.log("[pc-preview] TURN CONFIG LOADED", hasTurnGlobal ? "TURN URIs present" : "STUN only — TURN NOT CONFIGURED");
+                   hasTurnGlobal = mergedIceServers && mergedIceServers.length > 0 && computeHasTurn(mergedIceServers);
+                   console.log("[pc-preview] ICE servers from env:", mergedIceServers ? mergedIceServers.length : 0, "entries; has TURN URI:", hasTurnGlobal);
                  }
 
                  let pc = null;
@@ -357,12 +337,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    var ice = pc.iceConnectionState;
                    var line = (ice === "checking" || ice === "new") ? "ICE CONNECTING"
                      : ((ice === "connected" || ice === "completed") ? "ICE CONNECTED" : ("ICE: " + ice.toUpperCase()));
-                   var turnWarn = (!hasTurnGlobal) ? "\nTURN NOT CONFIGURED\n5G MAY NOT WORK" : "";
-                   var probeExtra = turnWarn
-                     + (sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet")
-                     + (turnProbeFailed ? "\nTURN FAILED" : "")
-                     + "\nTRANSPORT: ALL";
-                   var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + " connectionState=" + pc.connectionState;
+                   var failIce = (ice === "failed" || ice === "closed");
+                   var turnFailedLine = (turnProbeFailed || failIce) ? "\nTURN FAILED" : "";
+                   var cfgLine = iceConfigLoadFailed ? "\nICE CONFIG FAILED (check Render TURN_* env)" : (!hasTurnGlobal ? "\nICE CONFIG EMPTY (set TURN_URLS on Render)" : "");
+                   var relayDetect = sawRelayCandidate ? "\nrelay detection: local relay candidate seen" : "\nrelay detection: no local relay yet";
+                   var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + "\niceTransportPolicy=relay";
                    pc.getStats().then(function (report) {
                      var best = null;
                      report.forEach(function (r) {
@@ -378,18 +357,20 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        var lt = loc && loc.candidateType ? loc.candidateType : "?";
                        var rt = rem && rem.candidateType ? rem.candidateType : "?";
                        var relay = lt === "relay" || rt === "relay";
-                       extra = "\n" + (relay ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P") + "\nPAIR: " + lt + " → " + rt;
+                       console.log("[pc-preview] selected pair:", lt, "→", rt);
+                       if (relay) console.log("[pc-preview] relay detection: active path uses TURN relay");
+                       extra = (relay ? "\nTURN RELAY ACTIVE" : "") + "\nPAIR: " + lt + " → " + rt;
                      }
-                     statusEl.textContent = line + extra + probeExtra + gatherLine;
-                     console.log("[pc-preview]", statusEl.textContent);
-                   }).catch(function () { statusEl.textContent = line + probeExtra + gatherLine; });
+                     statusEl.textContent = line + extra + cfgLine + relayDetect + turnFailedLine + gatherLine;
+                     console.log("[pc-preview][diag]", statusEl.textContent);
+                   }).catch(function () { statusEl.textContent = line + cfgLine + relayDetect + turnFailedLine + gatherLine; });
                  }
 
                  function logLocalIce(ev) {
                    if (!ev.candidate) return;
                    var c = ev.candidate;
                    console.log("[pc-preview][ICE FULL CANDIDATE]", c.candidate);
-                   console.log("[pc-preview] local ICE candidate type:", c.type || "?", c.protocol || "", c.address || "");
+                   console.log("[pc-preview] local candidate type:", c.type || "?", "protocol=", c.protocol || "", "address=", c.address || "");
                  }
 
                  function closePc() {
@@ -407,19 +388,22 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    sawRelayCandidate = false;
                    turnProbeFailed = false;
                    clearTurnRelayProbe();
-                   var iceServers = JSON.parse(JSON.stringify(mergedIceServers || [{ urls: "stun:stun.l.google.com:19302" }]));
-                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "all" });
-                   if (hasTurnGlobal) {
-                     turnRelayProbeTimer = setTimeout(function () {
-                       turnRelayProbeTimer = null;
-                       if (!pc) return;
-                       if (!sawRelayCandidate) {
-                         turnProbeFailed = true;
-                         console.log("[pc-preview] TURN FAILED");
-                         updateDiag();
-                       }
-                     }, 10000);
+                   var iceServers = JSON.parse(JSON.stringify(mergedIceServers || []));
+                   if (!iceServers.length) {
+                     statusEl.textContent = "ICE CONFIG MISSING\nSet TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL on Render.";
+                     console.error("[pc-preview] no iceServers — abort RTCPeerConnection");
+                     return;
                    }
+                   pc = new RTCPeerConnection({ iceServers: iceServers, iceTransportPolicy: "relay" });
+                   turnRelayProbeTimer = setTimeout(function () {
+                     turnRelayProbeTimer = null;
+                     if (!pc) return;
+                     if (!sawRelayCandidate) {
+                       turnProbeFailed = true;
+                       console.log("[pc-preview] TURN FAILED (no relay candidate within 10s)");
+                       updateDiag();
+                     }
+                   }, 10000);
                    pc.onicecandidate = function (e) {
                      if (e.candidate) {
                        logLocalIce(e);
@@ -427,7 +411,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                          sawRelayCandidate = true;
                          turnProbeFailed = false;
                          clearTurnRelayProbe();
-                         console.log("[pc-preview] TURN RELAY CANDIDATE FOUND", e.candidate.candidate);
+                         console.log("[pc-preview] relay detection: local typ relay");
                        }
                        if (ws && ws.readyState === WebSocket.OPEN) {
                          ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
@@ -477,7 +461,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                              if (r.type === "candidate-pair" && r.state === "succeeded") {
                                var loc = report.get(r.localCandidateId);
                                var rem = report.get(r.remoteCandidateId);
-                               if (loc && rem) console.log("[pc-preview] selected pair:", loc.candidateType, "→", rem.candidateType);
+                               if (loc && rem) {
+                                 console.log("[pc-preview] selected pair:", loc.candidateType, "→", rem.candidateType);
+                                 var relay = loc.candidateType === "relay" || rem.candidateType === "relay";
+                                 if (relay) console.log("[pc-preview] relay detection: selected pair uses relay");
+                               }
                              }
                            });
                          }).catch(function () {});
@@ -493,16 +481,18 @@ app.MapGet("/pc-preview", (HttpContext context) =>
 
                  ws = new WebSocket(wsUrl);
                  ws.onopen = async function () {
-                   statusEl.textContent = "Loading ICE (/ice-config)...";
+                   statusEl.textContent = "ICE CONNECTING\nLoading /ice-config…";
                    try {
                      await ensureIceServersForPreview();
                    } catch (e) {
                      console.warn("[pc-preview] ensureIceServersForPreview", e);
                    }
-                   if (!hasTurnGlobal) {
-                     statusEl.textContent = "TURN NOT CONFIGURED\n5G MAY NOT WORK\n\nWS OPEN — waiting for offer…";
+                   if (iceConfigLoadFailed || !mergedIceServers || !mergedIceServers.length) {
+                     statusEl.textContent = "ICE CONNECTING\nICE CONFIG FAILED — set TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL";
+                   } else if (!hasTurnGlobal) {
+                     statusEl.textContent = "ICE CONNECTING\nTURN_URLS must include turn: or turns: URIs";
                    } else {
-                     statusEl.textContent = "ICE CONNECTING · WS OPEN";
+                     statusEl.textContent = "ICE CONNECTING";
                    }
                    ws.send(JSON.stringify({ type: "hello", role: "pc-preview", room }));
                  };
@@ -511,7 +501,8 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    if (msg.type === "offer" && msg.sdp) {
                      await ensureIceServersForPreview();
                      createPc();
-                     statusEl.textContent = "ICE CONNECTING · HANDLING OFFER";
+                     if (!pc) return;
+                     statusEl.textContent = "ICE CONNECTING";
                      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
                      var answer = await pc.createAnswer();
                      await pc.setLocalDescription(answer);
@@ -524,10 +515,13 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    if (msg.type === "ice-candidate" && msg.candidate && pc) {
                      try {
                        var rc = msg.candidate;
-                       console.log("[pc-preview][ICE FULL REMOTE]", rc && rc.candidate != null ? rc.candidate : JSON.stringify(rc));
+                       var rd = remoteCandidateDiag(rc);
+                       console.log("[pc-preview][ICE FULL REMOTE]", rd.sdp || JSON.stringify(rc));
+                       console.log("[pc-preview] remote candidate type:", rd.typ);
+                       if (candidateLooksRelay(rc)) console.log("[pc-preview] relay detection: remote typ relay");
                        await pc.addIceCandidate(msg.candidate);
-                       console.log("[pc-preview] remote ICE candidate applied");
                      } catch (err) { console.warn("[pc-preview] addIceCandidate", err); }
+                     updateDiag();
                      return;
                    }
                    if (msg.type === "camera-stopped") {

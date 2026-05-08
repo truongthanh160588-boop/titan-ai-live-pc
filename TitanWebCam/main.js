@@ -4,6 +4,15 @@
   /** TitanCameraServer: app.Map("/ws", ...) — phone MUST use this path + query params. */
   const SIGNAL_WS_PATH = "/ws";
 
+  /** Metered.ca production ICE URIs (credentials come from signaling GET /ice-config). */
+  const METERED_ICE_URLS = [
+    "stun:stun.relay.metered.ca:80",
+    "turn:global.relay.metered.ca:80",
+    "turn:global.relay.metered.ca:80?transport=tcp",
+    "turn:global.relay.metered.ca:443",
+    "turns:global.relay.metered.ca:443?transport=tcp",
+  ];
+
   const params = new URLSearchParams(window.location.search);
   const room = params.get("room") || "";
   const token = params.get("token") || "";
@@ -48,9 +57,10 @@
   let lastMicLevelForSignal = 0;
   let micPermissionDenied = false;
 
-  /** ICE from GET {signal}/ice-config (+ optional URL query overrides). No hardcoded production TURN. */
+  /** ICE: fixed Metered URLs + username/credential from GET {signal}/ice-config. */
   let resolvedIceServers = null;
   let hasTurnConfigured = false;
+  let iceConfigFetchFailed = false;
 
   let peerStatsTimer = null;
   let turnRelayProbeTimer = null;
@@ -306,70 +316,43 @@
     }));
   }
 
-  function iceServerKey(entry) {
-    const u = entry.urls;
-    const urls = typeof u === "string" ? u : Array.isArray(u) ? u.join(",") : "";
-    return `${urls}|${entry.username || ""}|${entry.credential || ""}`;
-  }
-
-  function computeHasTurn(list) {
-    return list.some(entry => {
-      const u = entry.urls;
-      const arr = typeof u === "string" ? [u] : Array.isArray(u) ? u : [];
-      return arr.some(url => /^turns?:/i.test(String(url)));
-    });
-  }
-
-  function mergeQueryIceServers(fromApi) {
-    const iceServers = fromApi.map(e => JSON.parse(JSON.stringify(e)));
-    const seen = new Set(iceServers.map(iceServerKey));
-    const turn = params.get("turn");
-    const turnUser = params.get("turnUser");
-    const turnPass = params.get("turnPass");
-    const extraStun = params.get("stun");
-    if (extraStun) {
-      const e = { urls: extraStun };
-      const k = iceServerKey(e);
-      if (!seen.has(k)) {
-        seen.add(k);
-        iceServers.push(e);
-      }
-    }
-    if (turn) {
-      const e = { urls: turn, username: turnUser || "", credential: turnPass || "" };
-      const k = iceServerKey(e);
-      if (!seen.has(k)) {
-        seen.add(k);
-        iceServers.push(e);
-      }
-    }
-    return iceServers;
-  }
-
   async function refreshIceServersFromNetwork() {
     const base = DEFAULT_SIGNALING_SERVER.replace(/\/+$/, "");
     try {
       const res = await fetch(`${base}/ice-config`, { cache: "no-store", credentials: "omit" });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        throw new Error(`ice-config HTTP ${res.status}`);
       }
       const data = await res.json();
       const list = Array.isArray(data.iceServers) ? data.iceServers : [];
-      resolvedIceServers = mergeQueryIceServers(list);
+      let username = "";
+      let credential = "";
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (e && (e.username || e.credential)) {
+          username = e.username || "";
+          credential = e.credential || "";
+          break;
+        }
+      }
+      resolvedIceServers = [{ urls: METERED_ICE_URLS.slice(), username, credential }];
+      hasTurnConfigured = true;
+      iceConfigFetchFailed = false;
+      log("ICE resolved: Metered URL set + credentials from /ice-config");
+      if (!peer && iceDiag) {
+        setIceDiag("ICE: —");
+      }
     } catch (e) {
-      log("TURN CONFIG LOADED", "fetch failed — STUN only", e && e.message ? e.message : e);
-      resolvedIceServers = mergeQueryIceServers([{ urls: "stun:stun.l.google.com:19302" }]);
-    }
-    hasTurnConfigured = computeHasTurn(resolvedIceServers);
-    log("TURN CONFIG LOADED", hasTurnConfigured ? "TURN URIs present" : "STUN only — TURN NOT CONFIGURED");
-    if (!peer && iceDiag) {
-      setIceDiag(hasTurnConfigured ? "ICE: —" : "TURN NOT CONFIGURED\n5G MAY NOT WORK");
+      iceConfigFetchFailed = true;
+      resolvedIceServers = null;
+      hasTurnConfigured = false;
+      throw e;
     }
   }
 
   function getIceServers() {
     if (!resolvedIceServers || resolvedIceServers.length === 0) {
-      return [{ urls: "stun:stun.l.google.com:19302" }];
+      return [];
     }
     return JSON.parse(JSON.stringify(resolvedIceServers));
   }
@@ -398,7 +381,7 @@
         if (r.type === "candidate-pair" && r.state === "succeeded") {
           const prio = r.priority || 0;
           if (!best || prio > best.prio) {
-            best = { prio, localId: r.localCandidateId, remoteId: r.remoteCandidateId, pair: r };
+            best = { prio, localId: r.localCandidateId, remoteId: r.remoteCandidateId };
           }
         }
       }
@@ -410,7 +393,10 @@
       const rem = report.get(best.remoteId);
       const lt = loc && loc.candidateType ? loc.candidateType : "?";
       const rt = rem && rem.candidateType ? rem.candidateType : "?";
-      log("Selected ICE pair:", lt, "→", rt, best.pair);
+      log("selected pair:", lt, "→", rt);
+      if (lt === "relay" || rt === "relay") {
+        log("relay detection: selected pair uses relay");
+      }
     } catch (e) {
       log("getStats(selected pair):", e);
     }
@@ -425,31 +411,25 @@
 
   function updatePhoneIceDiagnostics(pc) {
     if (!pc) {
-      setIceDiag("ICE: —");
+      setIceDiag(iceConfigFetchFailed || !hasTurnConfigured ? "ICE CONFIG FAILED\nCheck Render TURN_*" : "ICE: —");
       return;
     }
     const ice = pc.iceConnectionState;
-    let headline = "ICE: —";
+    let headline = "ICE CONNECTING";
     if (ice === "checking" || ice === "new") {
       headline = "ICE CONNECTING";
     } else if (ice === "connected" || ice === "completed") {
       headline = "ICE CONNECTED";
-    } else if (ice === "failed" || ice === "disconnected" || ice === "closed") {
-      headline = `ICE: ${ice.toUpperCase()}`;
     } else {
       headline = `ICE: ${ice.toUpperCase()}`;
     }
-    const turnWarn = !hasTurnConfigured ? "\nTURN NOT CONFIGURED\n5G MAY NOT WORK" : "";
-    const policy = "TRANSPORT: ALL";
-    const relayHint = sawRelayCandidate ? "LOCAL CAND: saw typ relay" : "LOCAL CAND: no relay yet";
-    const failLine = turnProbeFailed ? "TURN FAILED" : "";
+    const failIce = ice === "failed" || ice === "closed";
+    const policy = "TRANSPORT: RELAY ONLY";
+    const relayDetect = sawRelayCandidate ? "relay detection: local relay candidate seen" : "relay detection: no local relay yet";
+    const failLine = turnProbeFailed || failIce ? "\nTURN FAILED" : "";
     const gather = pc.iceGatheringState || "";
     const conn = pc.connectionState || "";
-    setIceDiag(
-      `${headline}\n${policy}${turnWarn}\n${relayHint}` +
-        (failLine ? `\n${failLine}` : "") +
-        `\ngather=${gather} conn=${conn}`
-    );
+    setIceDiag(`${headline}\n${policy}\n${relayDetect}${failLine}\ngather=${gather} conn=${conn}`);
     pc.getStats().then(report => {
       let best = null;
       for (const r of report.values()) {
@@ -468,14 +448,13 @@
       const lt = loc && loc.candidateType ? loc.candidateType : "?";
       const rt = rem && rem.candidateType ? rem.candidateType : "?";
       const relayInUse = lt === "relay" || rt === "relay";
-      const pathLabel = relayInUse ? "TURN RELAY · RELAY ACTIVE" : "DIRECT P2P";
-      const turnWarn = !hasTurnConfigured ? "\nTURN NOT CONFIGURED\n5G MAY NOT WORK" : "";
-      const failLine = turnProbeFailed ? "\nTURN FAILED" : "";
-      const relayHint = sawRelayCandidate ? "\nLOCAL CAND: saw typ relay" : "\nLOCAL CAND: no relay yet";
-      const gather = pc.iceGatheringState || "";
-      const conn = pc.connectionState || "";
+      if (relayInUse) {
+        log("relay detection: active path uses TURN relay");
+      }
+      const relayLine = relayInUse ? "TURN RELAY ACTIVE" : "";
+      const pairLine = `PAIR: ${lt} → ${rt}`;
       setIceDiag(
-        `${headline}\n${pathLabel}\nPAIR: ${lt} → ${rt}\nTRANSPORT: ALL${turnWarn}${relayHint}${failLine}\ngather=${gather} conn=${conn}`
+        `${headline}\n${relayLine ? `${relayLine}\n` : ""}${pairLine}\n${policy}\n${relayDetect}${failLine}\ngather=${gather} conn=${conn}`
       );
     }).catch(() => {});
   }
@@ -508,7 +487,21 @@
       return;
     }
 
-    await refreshIceServersFromNetwork();
+    try {
+      await refreshIceServersFromNetwork();
+    } catch (e) {
+      iceConfigFetchFailed = true;
+      log("ICE config failed — cannot start WebRTC", e && e.message ? e.message : e);
+      setStatus("ICE CONFIG FAILED\nSet TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL on Render.");
+      return;
+    }
+
+    const iceServers = getIceServers();
+    if (!iceServers.length) {
+      iceConfigFetchFailed = true;
+      setStatus("ICE CONFIG FAILED\nEmpty /ice-config");
+      return;
+    }
 
     clearTurnRelayProbe();
     stopPeerStatsLoop();
@@ -523,8 +516,8 @@
     }
 
     peer = new RTCPeerConnection({
-      iceServers: getIceServers(),
-      iceTransportPolicy: "all",
+      iceServers,
+      iceTransportPolicy: "relay",
     });
     mediaStream.getVideoTracks().forEach(track => peer.addTrack(track, mediaStream));
     if (micEnabled) {
@@ -541,7 +534,7 @@
           sawRelayCandidate = true;
           turnProbeFailed = false;
           clearTurnRelayProbe();
-          log("TURN RELAY CANDIDATE FOUND", c.candidate);
+          log("relay detection: local typ relay");
         }
         log("Local ICE candidate type:", c.type || "(unknown)", c.protocol || "", c.address || "");
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -554,19 +547,17 @@
       updatePhoneIceDiagnostics(peer);
     };
 
-    if (hasTurnConfigured) {
-      turnRelayProbeTimer = setTimeout(() => {
-        turnRelayProbeTimer = null;
-        if (!peer) {
-          return;
-        }
-        if (!sawRelayCandidate) {
-          turnProbeFailed = true;
-          log("TURN FAILED");
-          updatePhoneIceDiagnostics(peer);
-        }
-      }, 10000);
-    }
+    turnRelayProbeTimer = setTimeout(() => {
+      turnRelayProbeTimer = null;
+      if (!peer) {
+        return;
+      }
+      if (!sawRelayCandidate) {
+        turnProbeFailed = true;
+        log("TURN FAILED (no relay candidate within 10s)");
+        updatePhoneIceDiagnostics(peer);
+      }
+    }, 10000);
 
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -600,7 +591,7 @@
     sendCameraStopped();
     clearTurnRelayProbe();
     stopPeerStatsLoop();
-    setIceDiag(hasTurnConfigured ? "ICE: —" : "TURN NOT CONFIGURED\n5G MAY NOT WORK");
+    setIceDiag(hasTurnConfigured && !iceConfigFetchFailed ? "ICE: —" : "ICE CONFIG FAILED\nCheck Render TURN_*");
     if (peer) {
       try {
         peer.close();
@@ -743,7 +734,11 @@
       try {
         await refreshIceServersFromNetwork();
       } catch (e) {
+        iceConfigFetchFailed = true;
         log("ice-config prefetch error", e);
+        if (iceDiag) {
+          setIceDiag("ICE CONFIG FAILED\nCheck Render TURN_*");
+        }
       }
       log("WebSocket OPEN — sending join-room + hello");
 
@@ -796,15 +791,13 @@
         } else if (t === "ice-candidate" && data.candidate && peer) {
           const rc = data.candidate;
           log("[ICE FULL REMOTE]", rc.candidate != null ? rc.candidate : JSON.stringify(rc));
+          const sdp = typeof rc.candidate === "string" ? rc.candidate : "";
+          const typMatch = sdp.match(/\btyp\s+(\w+)/i);
+          const remoteTyp = typMatch ? typMatch[1].toLowerCase() : rc.type || "?";
+          log("remote candidate type:", remoteTyp);
           if (candidateLooksRelay(rc)) {
-            log("TURN RELAY CANDIDATE FOUND (remote)", rc.candidate);
+            log("relay detection: remote typ relay");
           }
-          log(
-            "Remote ICE candidate:",
-            rc.type || rc.candidateType || "(unknown)",
-            rc.protocol || "",
-            (rc.address || rc.ip || "") + ""
-          );
           peer.addIceCandidate(data.candidate).catch(() => {});
         } else {
           setStatus(`SIGNAL CONNECTED\n${event.data}`);
@@ -885,7 +878,13 @@
     refreshOperatorUi();
   });
 
-  refreshIceServersFromNetwork().catch(() => {});
+  refreshIceServersFromNetwork().catch(e => {
+    iceConfigFetchFailed = true;
+    log("initial ice-config failed", e && e.message ? e.message : e);
+    if (iceDiag) {
+      setIceDiag("ICE CONFIG FAILED\nCheck Render TURN_*");
+    }
+  });
 
   refreshOperatorUi();
 })();

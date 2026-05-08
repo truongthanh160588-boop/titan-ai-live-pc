@@ -12,8 +12,7 @@ services:
         value: Production
       - key: CORS_ORIGINS
         value: https://titan-web-cam.vercel.app,http://localhost:5173,http://localhost:3000
-      # WebRTC TURN (set in Render Dashboard → Environment):
-      # TURN_URLS=turn:your-domain:3478,turns:your-domain:5349
-      # TURN_USERNAME=your-user
-      # TURN_CREDENTIAL=your-secret
-      # Optional: STUN_URL=stun:stun.l.google.com:19302
+      # WebRTC Metered.ca via env (comma-separated TURN_URLS — must include turn:/turns: URIs):
+      # TURN_URLS=stun:stun.relay.metered.ca:80,turn:global.relay.metered.ca:80,turn:global.relay.metered.ca:80?transport=tcp,turn:global.relay.metered.ca:443,turns:global.relay.metered.ca:443?transport=tcp
+      # TURN_USERNAME=<Metered dashboard>
+      # TURN_CREDENTIAL=<Metered dashboard>
