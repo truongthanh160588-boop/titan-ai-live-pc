@@ -170,7 +170,8 @@
 
   function startAudioLevelReporting() {
     stopAudioLevelReporting();
-    audioLevelTimer = setInterval(tickSendAudioLevel, 200);
+    // Keep signaling channel lighter while still responsive for UI meter.
+    audioLevelTimer = setInterval(tickSendAudioLevel, 350);
   }
 
   function tickSendAudioLevel() {
@@ -304,6 +305,19 @@
     return { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15, max: 15 }, facingMode: useBackCamera ? "environment" : "user" };
   }
 
+  function getSafe5GTargetBitrateKbps() {
+    // Prioritize audio stability when mic is on.
+    return micEnabled ? 450 : 700;
+  }
+
+  function getSafe5GMaxBitrateBps() {
+    return micEnabled ? 650000 : 900000;
+  }
+
+  function getSafe5GMaxFps() {
+    return micEnabled ? 12 : 15;
+  }
+
   async function tuneVideoSenderForProfile(pc, profile) {
     if (!pc || profile !== "SAFE_5G") {
       return;
@@ -318,12 +332,19 @@
       if (!params.encodings || !params.encodings.length) {
         params.encodings = [{}];
       }
-      params.encodings[0].maxBitrate = 900000;
-      params.encodings[0].maxFramerate = 15;
+      params.encodings[0].maxBitrate = getSafe5GMaxBitrateBps();
+      params.encodings[0].maxFramerate = getSafe5GMaxFps();
       params.encodings[0].scaleResolutionDownBy = 1;
       params.degradationPreference = "maintain-framerate";
       await sender.setParameters(params);
-      log("SAFE_5G sender tuned:", "targetBitrate=700kbps", "maxBitrate=900kbps", "fps=15", "resolution=640x360");
+      log(
+        "SAFE_5G sender tuned:",
+        `targetBitrate=${getSafe5GTargetBitrateKbps()}kbps`,
+        `maxBitrate=${Math.round(getSafe5GMaxBitrateBps() / 1000)}kbps`,
+        `fps=${getSafe5GMaxFps()}`,
+        "resolution=640x360",
+        micEnabled ? "mode=MIC_ON" : "mode=MIC_OFF"
+      );
     } catch (e) {
       log("SAFE_5G sender tune failed:", e);
     }
@@ -347,7 +368,7 @@
       }
       if (inVideo && !bitrateInserted && line.startsWith("c=")) {
         out.push(line);
-        out.push("b=AS:700");
+        out.push(`b=AS:${getSafe5GTargetBitrateKbps()}`);
         bitrateInserted = true;
         continue;
       }
