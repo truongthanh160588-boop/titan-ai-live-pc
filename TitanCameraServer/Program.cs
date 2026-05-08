@@ -260,6 +260,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                  var audioAnalyser = null;
                  var audioAnalyserData = null;
                  var audioRaf = null;
+                 var videoDiagTimer = null;
+                 var videoState = "NO VIDEO FRAMES";
+                 var lastFrameCount = 0;
+                 var fpsEstimate = 0;
+                 var videoSizeText = "0x0";
 
                  function clearTurnRelayProbe() {
                    if (turnRelayProbeTimer) { clearTimeout(turnRelayProbeTimer); turnRelayProbeTimer = null; }
@@ -327,6 +332,48 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    audioAnalyser = null;
                    audioAnalyserData = null;
                    audioMeterEl.textContent = "REMOTE MIC PEAK: 0%";
+                 }
+
+                 function stopVideoDiagnostics() {
+                   if (videoDiagTimer) {
+                     clearInterval(videoDiagTimer);
+                     videoDiagTimer = null;
+                   }
+                   videoState = "NO VIDEO FRAMES";
+                   fpsEstimate = 0;
+                   lastFrameCount = 0;
+                   videoSizeText = "0x0";
+                 }
+
+                 function sampleVideoStats() {
+                   var width = remoteVideo.videoWidth || 0;
+                   var height = remoteVideo.videoHeight || 0;
+                   videoSizeText = width + "x" + height;
+                   var framesNow = 0;
+                   var quality = remoteVideo.getVideoPlaybackQuality ? remoteVideo.getVideoPlaybackQuality() : null;
+                   if (quality && typeof quality.totalVideoFrames === "number") {
+                     framesNow = quality.totalVideoFrames;
+                   } else {
+                     // Fallback when getVideoPlaybackQuality is unavailable.
+                     framesNow = remoteVideo.currentTime > 0 ? Math.round(remoteVideo.currentTime * 15) : 0;
+                   }
+                   var delta = Math.max(0, framesNow - lastFrameCount);
+                   lastFrameCount = framesNow;
+                   fpsEstimate = delta;
+                   var receiving = (width > 0 && height > 0 && delta > 0);
+                   videoState = receiving ? "VIDEO RECEIVING" : "NO VIDEO FRAMES";
+                   if (!receiving && remoteVideo.readyState >= 2 && width > 0 && height > 0 && remoteVideo.paused) {
+                     videoState = "NO VIDEO FRAMES";
+                   }
+                 }
+
+                 function startVideoDiagnostics() {
+                   stopVideoDiagnostics();
+                   sampleVideoStats();
+                   videoDiagTimer = setInterval(function () {
+                     sampleVideoStats();
+                     updateDiag();
+                   }, 1000);
                  }
 
                  function startAudioMeter(stream) {
@@ -418,6 +465,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    var cfgLine = iceConfigLoadFailed ? "\nICE CONFIG FAILED (check Render TURN_* env)" : (!hasTurnGlobal ? "\nICE CONFIG EMPTY (set TURN_URLS on Render)" : "");
                    var relayDetect = sawRelayCandidate ? "\nrelay detection: local relay candidate seen" : "\nrelay detection: no local relay yet";
                    var audioLine = "\n" + audioState + "\nremoteAudio.readyState=" + remoteAudio.readyState + " paused=" + remoteAudio.paused + " muted=" + remoteAudio.muted;
+                   var videoLine = "\n" + videoState + "\nFPS estimate=" + fpsEstimate + " video=" + videoSizeText;
                    var gatherLine = "\niceGatheringState=" + pc.iceGatheringState + " iceConnectionState=" + pc.iceConnectionState + "\niceTransportPolicy=relay";
                    pc.getStats().then(function (report) {
                      var best = null;
@@ -436,11 +484,11 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        var relay = lt === "relay" || rt === "relay";
                        console.log("[pc-preview] selected pair:", lt, "→", rt);
                        if (relay) console.log("[pc-preview] relay detection: active path uses TURN relay");
-                       extra = (relay ? "\nTURN RELAY ACTIVE" : "") + "\nPAIR: " + lt + " → " + rt;
+                       extra = (relay ? "\nTURN RELAY ACTIVE" : "") + "\nselected candidate pair type: " + lt + " → " + rt;
                      }
-                     statusEl.textContent = line + extra + cfgLine + relayDetect + turnFailedLine + audioLine + gatherLine;
+                     statusEl.textContent = line + extra + cfgLine + relayDetect + turnFailedLine + videoLine + audioLine + gatherLine;
                      console.log("[pc-preview][diag]", statusEl.textContent);
-                   }).catch(function () { statusEl.textContent = line + cfgLine + relayDetect + turnFailedLine + audioLine + gatherLine; });
+                   }).catch(function () { statusEl.textContent = line + cfgLine + relayDetect + turnFailedLine + videoLine + audioLine + gatherLine; });
                  }
 
                  function logLocalIce(ev) {
@@ -454,6 +502,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                    stopStats();
                    clearMediaWait();
                    clearTurnRelayProbe();
+                   stopVideoDiagnostics();
                    stopAudioMeter();
                    remoteAudio.srcObject = null;
                    unmuteBtn.style.display = "none";
@@ -525,6 +574,7 @@ app.MapGet("/pc-preview", (HttpContext context) =>
                        remoteVideo.onloadeddata = hideMediaWaitIfPlaying;
                        remoteVideo.onresize = hideMediaWaitIfPlaying;
                        scheduleMediaWait();
+                       startVideoDiagnostics();
                        updateDiag();
                      }
                    };

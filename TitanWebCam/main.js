@@ -300,7 +300,59 @@
       return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: useBackCamera ? "environment" : "user" };
     }
 
-    return { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 24 }, facingMode: useBackCamera ? "environment" : "user" };
+    return { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15, max: 15 }, facingMode: useBackCamera ? "environment" : "user" };
+  }
+
+  async function tuneVideoSenderForProfile(pc, profile) {
+    if (!pc || profile !== "SAFE_5G") {
+      return;
+    }
+
+    try {
+      const sender = pc.getSenders().find(s => s && s.track && s.track.kind === "video");
+      if (!sender || !sender.getParameters || !sender.setParameters) {
+        return;
+      }
+      const params = sender.getParameters() || {};
+      if (!params.encodings || !params.encodings.length) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = 900000;
+      params.encodings[0].maxFramerate = 15;
+      params.encodings[0].scaleResolutionDownBy = 1;
+      params.degradationPreference = "maintain-framerate";
+      await sender.setParameters(params);
+      log("SAFE_5G sender tuned:", "targetBitrate=700kbps", "maxBitrate=900kbps", "fps=15", "resolution=640x360");
+    } catch (e) {
+      log("SAFE_5G sender tune failed:", e);
+    }
+  }
+
+  function applySafe5GBitrateToSdp(sdp, profile) {
+    if (profile !== "SAFE_5G" || typeof sdp !== "string" || !sdp.length) {
+      return sdp;
+    }
+    const lines = sdp.split("\r\n");
+    const out = [];
+    let inVideo = false;
+    let bitrateInserted = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("m=")) {
+        inVideo = line.startsWith("m=video");
+        bitrateInserted = false;
+        out.push(line);
+        continue;
+      }
+      if (inVideo && !bitrateInserted && line.startsWith("c=")) {
+        out.push(line);
+        out.push("b=AS:700");
+        bitrateInserted = true;
+        continue;
+      }
+      out.push(line);
+    }
+    return out.join("\r\n");
   }
 
   function sendCameraReady(roomCode) {
@@ -523,6 +575,7 @@
     if (micEnabled) {
       mediaStream.getAudioTracks().forEach(track => peer.addTrack(track, mediaStream));
     }
+    await tuneVideoSenderForProfile(peer, qualitySelect.value);
 
     attachPeerIceHandlers(peer);
 
@@ -560,8 +613,9 @@
     }, 10000);
 
     const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    ws.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+    const tunedSdp = applySafe5GBitrateToSdp(offer.sdp, qualitySelect.value);
+    await peer.setLocalDescription({ type: "offer", sdp: tunedSdp });
+    ws.send(JSON.stringify({ type: "offer", sdp: tunedSdp }));
     updatePhoneIceDiagnostics(peer);
     logIcePcStates(peer, "after setLocalDescription offer");
     setStatus("CAMERA ON\nSENDING WEBRTC OFFER...");
