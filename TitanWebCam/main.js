@@ -256,6 +256,12 @@
       return;
     }
     const tracks = mediaStream.getAudioTracks();
+    if (!tracks.length && micEnabled) {
+      micPermissionDenied = true;
+      micEnabled = false;
+      updateMicMeterUi(0);
+      setStatus("MIC UNAVAILABLE\nRestart camera and allow microphone.");
+    }
     for (const track of tracks) {
       track.enabled = !!micEnabled;
     }
@@ -715,15 +721,33 @@
         mediaStream.getTracks().forEach(track => track.stop());
       }
 
-      const constraints = {
-        video: getVideoConstraints(qualitySelect.value),
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
+      const videoConstraints = getVideoConstraints(qualitySelect.value);
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
       };
-      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: audioConstraints
+        });
+      } catch (error) {
+        const msg = error && error.message ? String(error.message) : "";
+        const allowVideoOnly =
+          error && (error.name === "NotAllowedError" || error.name === "NotFoundError" || error.name === "NotReadableError") ||
+          /audio|microphone|permission|denied|device/i.test(msg);
+        if (!allowVideoOnly) {
+          throw error;
+        }
+        log("getUserMedia audio failed, fallback to video-only:", error && error.name ? error.name : error);
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: false
+        });
+        micPermissionDenied = true;
+        micEnabled = false;
+      }
       applyLocalMicTrackState();
       preview.srcObject = mediaStream;
       preview.muted = true;
